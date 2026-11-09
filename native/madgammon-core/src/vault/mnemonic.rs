@@ -1,6 +1,9 @@
 use bip39::{Language, Mnemonic};
+use hkdf::Hkdf;
 use rand::{rngs::OsRng, RngCore};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Error, Debug, PartialEq, Eq)]
@@ -13,6 +16,14 @@ pub enum MnemonicError {
 
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct DerivedSeed(pub [u8; 64]);
+
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct DerivedIdentity {
+    pub x25519_public_key: [u8; 32],
+    pub x25519_private_key: [u8; 32],
+    #[zeroize(skip)]
+    pub fingerprint: String,
+}
 
 /// Sovereign BIP-39 mnemonic generator and seed derivation engine.
 /// Compatible with bip39 crate v2.x API.
@@ -51,6 +62,36 @@ impl MnemonicManager {
         result.copy_from_slice(&seed_bytes);
         Ok(DerivedSeed(result))
     }
+
+    /// Derives sovereign X25519 DH identity keys and public fingerprint from 64-byte seed.
+    /// Uses HKDF-SHA256 with domain separation.
+    pub fn derive_identity(seed: &DerivedSeed) -> DerivedIdentity {
+        let hk = Hkdf::<Sha256>::new(Some(b"madgammon-kdf-salt"), &seed.0);
+        let mut x25519_secret_bytes = [0u8; 32];
+        hk.expand(b"madgammon-x25519-dh-key", &mut x25519_secret_bytes)
+            .expect("32 bytes is valid length for HKDF-SHA256");
+
+        let static_secret = StaticSecret::from(x25519_secret_bytes);
+        let public_key = PublicKey::from(&static_secret);
+
+        // Derive fingerprint from public key (SHA-256)
+        let mut hasher = Sha256::new();
+        hasher.update(b"madgammon-identity-fingerprint");
+        hasher.update(public_key.as_bytes());
+        let digest = hasher.finalize();
+
+        let fingerprint = digest[..16]
+            .chunks(2)
+            .map(|chunk| format!("{:02X}{:02X}", chunk[0], chunk[1]))
+            .collect::<Vec<String>>()
+            .join(":");
+
+        DerivedIdentity {
+            x25519_public_key: *public_key.as_bytes(),
+            x25519_private_key: x25519_secret_bytes,
+            fingerprint,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +119,11 @@ mod tests {
         assert!(MnemonicManager::validate_phrase(phrase));
         let seed = MnemonicManager::phrase_to_seed(phrase, "").unwrap();
         assert_ne!(seed.0, [0u8; 64]);
+
+        let identity = MnemonicManager::derive_identity(&seed);
+        assert_ne!(identity.x25519_public_key, [0u8; 32]);
+        assert_ne!(identity.x25519_private_key, [0u8; 32]);
+        assert_eq!(identity.fingerprint.len(), 39); // 8 groups of 4 hex chars + 7 colons = 39 chars
+        assert!(identity.fingerprint.contains(':'));
     }
 }

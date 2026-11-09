@@ -48,7 +48,8 @@ class ErasureCodedVault {
         private const val GCM_IV_LEN = 12
         private const val GCM_TAG_BITS = 128
         private const val PBKDF2_ALGO = "PBKDF2WithHmacSHA256"
-        private const val PBKDF2_ITERATIONS = 10000
+        // Upgraded to OWASP mobile recommendation for PBKDF2-HMAC-SHA256 (210,000 iterations)
+        private const val PBKDF2_ITERATIONS = 210000
 
         // Galois Field GF(2^8) primitive polynomial: x^8 + x^4 + x^3 + x^2 + 1 (0x11D = 285)
         private const val GF_POLY = 0x11D

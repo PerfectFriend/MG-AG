@@ -1,6 +1,13 @@
 package com.example.data
 
 import android.content.Context
+import org.bouncycastle.crypto.digests.SHA256Digest
+import org.bouncycastle.crypto.generators.HKDFBytesGenerator
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
+import org.bouncycastle.crypto.params.HKDFParameters
+import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.security.MessageDigest
 import java.security.SecureRandom
 
@@ -153,6 +160,10 @@ object Bip39Helper {
 
     /**
      * Derives full cryptographic identity keys and fingerprints from the 12-word seed phrase.
+     * Uses HKDF-SHA256 domain separation to derive:
+     * - Ed25519 identity keypair (for signatures / auth)
+     * - X25519 DH keypair (for key exchange / ratchet)
+     * - Sovereign public fingerprint
      */
     fun deriveCryptoIdentity(mnemonic: String): CryptoIdentity {
         val seedBytes = mnemonicToSeed(mnemonic)
@@ -161,16 +172,29 @@ object Bip39Helper {
         // Master Private Key: first 32 bytes (256 bits)
         val masterPrivateKeyBytes = seedBytes.copyOfRange(0, 32)
 
-        // There is no asymmetric identity key in this build. What was previously called
-        // "master public key" was SHA-256(private key) — anyone holding it could rebuild
-        // the private half from the (recoverable) seed. Expose an explicit fingerprint
-        // instead, domain-separated, and never a value derived from the private key alone.
+        // 1. Derive Ed25519 Identity Keypair using HKDF-SHA256 domain separation
+        val ed25519Seed = deriveSubkey(seedBytes, "madgammon-ed25519-identity-key".toByteArray(Charsets.UTF_8), 32)
+        val ed25519PrivKey = Ed25519PrivateKeyParameters(ed25519Seed, 0)
+        val ed25519PubKey = ed25519PrivKey.generatePublicKey()
+        val ed25519PubKeyBytes = ed25519PubKey.encoded
+        val ed25519PrivKeyHex = ed25519Seed.joinToString("") { "%02x".format(it) }
+        val ed25519PubKeyHex = ed25519PubKeyBytes.joinToString("") { "%02x".format(it) }
+
+        // 2. Derive X25519 DH Keypair using HKDF-SHA256 domain separation
+        val x25519Seed = deriveSubkey(seedBytes, "madgammon-x25519-dh-key".toByteArray(Charsets.UTF_8), 32)
+        val x25519PrivKey = X25519PrivateKeyParameters(x25519Seed, 0)
+        val x25519PubKey = x25519PrivKey.generatePublicKey()
+        val x25519PubKeyBytes = x25519PubKey.encoded
+        val x25519PrivKeyHex = x25519Seed.joinToString("") { "%02x".format(it) }
+        val x25519PubKeyHex = x25519PubKeyBytes.joinToString("") { "%02x".format(it) }
+
+        // 3. Derive Sovereign Identity Fingerprint from Ed25519 public key (as in SSH / PGP standard)
         val sha256 = MessageDigest.getInstance("SHA-256")
         sha256.update("madgammon-identity-fingerprint".toByteArray(Charsets.UTF_8))
-        val fingerprintBytes = sha256.digest(masterPrivateKeyBytes)
+        val fingerprintBytes = sha256.digest(ed25519PubKeyBytes)
         val masterKeyFingerprintHex = fingerprintBytes.joinToString("") { "%02x".format(it) }
 
-        // Identity Fingerprint: e.g. "A1B2:C3D4:E5F6:7890:1234:5678:90AB:CDEF"
+        // Identity Fingerprint formatted: e.g. "A1B2:C3D4:E5F6:7890:1234:5678:90AB:CDEF"
         val fingerprint = fingerprintBytes.take(16)
             .chunked(2)
             .joinToString(":") { chunk -> chunk.joinToString("") { "%02X".format(it) } }
@@ -182,8 +206,25 @@ object Bip39Helper {
             words = words,
             seedBytesHex = seedBytesHex,
             masterKeyFingerprintHex = masterKeyFingerprintHex,
-            identityFingerprint = fingerprint
+            identityFingerprint = fingerprint,
+            ed25519PublicKeyHex = ed25519PubKeyHex,
+            ed25519PrivateKeyHex = ed25519PrivKeyHex,
+            x25519PublicKeyHex = x25519PubKeyHex,
+            x25519PrivateKeyHex = x25519PrivKeyHex,
+            masterPublicKeyHex = ed25519PubKeyHex,
+            masterPrivateKeyHex = seedBytesHex
         )
+    }
+
+    /**
+     * HKDF-SHA256 key derivation with info context tag.
+     */
+    private fun deriveSubkey(ikm: ByteArray, info: ByteArray, outLen: Int): ByteArray {
+        val hkdf = HKDFBytesGenerator(SHA256Digest())
+        hkdf.init(HKDFParameters(ikm, "madgammon-kdf-salt".toByteArray(Charsets.UTF_8), info))
+        val out = ByteArray(outLen)
+        hkdf.generateBytes(out, 0, outLen)
+        return out
     }
 
     private fun pbkdf2HmacSha512(password: ByteArray, salt: ByteArray, iterations: Int, keyLengthBytes: Int): ByteArray {
@@ -219,6 +260,44 @@ object Bip39Helper {
         }
         return result
     }
+
+    /**
+     * Signs a message using Ed25519 identity private key.
+     */
+    fun signMessage(privateKeyHex: String, message: ByteArray): ByteArray {
+        val privBytes = hexToBytes(privateKeyHex)
+        val privParams = Ed25519PrivateKeyParameters(privBytes, 0)
+        val signer = Ed25519Signer()
+        signer.init(true, privParams)
+        signer.update(message, 0, message.size)
+        return signer.generateSignature()
+    }
+
+    /**
+     * Verifies an Ed25519 signature against a public key and message.
+     */
+    fun verifySignature(publicKeyHex: String, message: ByteArray, signature: ByteArray): Boolean {
+        return try {
+            val pubBytes = hexToBytes(publicKeyHex)
+            val pubParams = Ed25519PublicKeyParameters(pubBytes, 0)
+            val verifier = Ed25519Signer()
+            verifier.init(false, pubParams)
+            verifier.update(message, 0, message.size)
+            verifier.verifySignature(signature)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val clean = hex.trim()
+        val result = ByteArray(clean.length / 2)
+        for (i in result.indices) {
+            val index = i * 2
+            result[i] = clean.substring(index, index + 2).toInt(16).toByte()
+        }
+        return result
+    }
 }
 
 /**
@@ -233,6 +312,10 @@ data class CryptoIdentity(
     val createdAt: Long = System.currentTimeMillis(),
     val onionPeerId: String = "anon-" + identityFingerprint.take(12),
     val masterPublicKeyHex: String = masterKeyFingerprintHex,
-    val masterPrivateKeyHex: String = seedBytesHex
+    val masterPrivateKeyHex: String = seedBytesHex,
+    val ed25519PublicKeyHex: String = "",
+    val ed25519PrivateKeyHex: String = "",
+    val x25519PublicKeyHex: String = "",
+    val x25519PrivateKeyHex: String = ""
 )
 

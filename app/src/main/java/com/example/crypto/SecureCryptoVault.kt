@@ -17,7 +17,8 @@ import javax.crypto.spec.SecretKeySpec
  */
 object SecureCryptoVault {
 
-    private const val ITERATIONS = 10000
+    // Upgraded to OWASP mobile recommendation for PBKDF2-HMAC-SHA256 (210,000 iterations)
+    private const val ITERATIONS = 210000
     private const val KEY_LENGTH_BITS = 256
     private const val SALT_LENGTH_BYTES = 16
     private const val IV_LENGTH_BYTES = 12

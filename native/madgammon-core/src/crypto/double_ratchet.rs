@@ -129,6 +129,7 @@ pub struct DoubleRatchetSession {
     send_count: u32,
     recv_count: u32,
     prev_send_chain_len: u32,
+    #[allow(dead_code)]
     is_initiator: bool,
     skipped_keys: HashMap<([u8; 32], u32), [u8; 32]>, // (dh_pub, msg_num) -> msg_key
 }
