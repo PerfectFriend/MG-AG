@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">ШЕШ БЕШ</string>
+    <string name="app_name_game">ШЕШ БЕШ</string>
+    <string name="app_name_messenger">SimpleX Чат</string>
+    <string name="attribution_vpn_label">Foxray Core VPN Tunneling</string>
+    <string name="attribution_radio_label">SimpleX Secure Radio Streaming</string>
+</resources>

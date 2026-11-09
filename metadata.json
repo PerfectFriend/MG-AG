@@ -1,0 +1,8 @@
+{
+  "name": "Шеш-Беш",
+  "description": "Шеш-Беш — классические длинные и бешеные нарды с тактическим ИИ, криптографическими зариками и P2P мультиплеером.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

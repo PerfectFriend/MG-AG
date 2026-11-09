@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Шеш-Беш (MadGammon) — Скачать APK</title>
+    <style>
+        :root {
+            --bg: #0D1117;
+            --card-bg: #161B22;
+            --border: #30363D;
+            --accent: #2EA043;
+            --accent-hover: #3FB950;
+            --gold: #F1E05A;
+            --text-main: #F0F6FC;
+            --text-muted: #8B949E;
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+        .container {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 36px 32px;
+            max-width: 560px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+        }
+        .icon-wrapper {
+            margin-bottom: 20px;
+            display: inline-block;
+        }
+        .icon-img {
+            width: 110px;
+            height: 110px;
+            border-radius: 24px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+            border: 2px solid #238636;
+        }
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: var(--text-main);
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 15px;
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+        .badge {
+            display: inline-block;
+            background: rgba(46, 160, 67, 0.15);
+            color: #3FB950;
+            border: 1px solid rgba(46, 160, 67, 0.4);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+        .btn-download {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background-color: var(--accent);
+            color: #FFFFFF;
+            text-decoration: none;
+            padding: 16px 28px;
+            border-radius: 12px;
+            font-size: 17px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 14px rgba(46, 160, 67, 0.4);
+            margin-bottom: 12px;
+        }
+        .btn-download:hover {
+            background-color: var(--accent-hover);
+            transform: translateY(-2px);
+        }
+        .btn-secondary {
+            display: inline-block;
+            color: var(--text-muted);
+            font-size: 13px;
+            text-decoration: underline;
+            padding: 8px;
+            transition: color 0.2s;
+        }
+        .btn-secondary:hover {
+            color: var(--text-main);
+        }
+        .meta-box {
+            background: #0D1117;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            margin-top: 24px;
+            text-align: left;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .meta-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+        .meta-row:last-child {
+            margin-bottom: 0;
+        }
+        .meta-val {
+            color: var(--text-main);
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        }
+        .progress-bar-container {
+            display: none;
+            width: 100%;
+            background: #21262D;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 16px;
+            height: 12px;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: #2EA043;
+            transition: width 0.2s ease;
+        }
+        .status-text {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            min-height: 18px;
+        }
+        .parts-list {
+            margin-top: 14px;
+            text-align: left;
+            font-size: 12px;
+            color: var(--text-muted);
+            border-top: 1px solid var(--border);
+            padding-top: 12px;
+        }
+        .parts-list a {
+            color: #58A6FF;
+            text-decoration: none;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon-wrapper">
+            <img src="/app/src/main/res/drawable/shesh_besh_dice_1792670772050.jpg" alt="Шеш-Беш Иконка" class="icon-img" onerror="this.style.display='none'">
+        </div>
+        <h1>Шеш-Беш</h1>
+        <p class="subtitle">Классические длинные и бешеные нарды<br>с тактическим ИИ и криптографическими костями</p>
+        <div>
+            <span class="badge">✔ APK V2 Signed & Verified</span>
+        </div>
+        
+        <button id="downloadBtn" onclick="startChunkedDownload()" class="btn-download" style="border:none; width:100%; cursor:pointer;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span id="btnText">Скачать APK (56 МБ)</span>
+        </button>
+
+        <div id="progressContainer" class="progress-bar-container">
+            <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <div id="statusText" class="status-text"></div>
+
+        <div class="parts-list">
+            <span>Прямые части (если браузер блокирует сборку):</span><br>
+            <a href="/MadGammon.apk.part_aa" download="MadGammon.apk.part_aa">Часть 1 (25М)</a>
+            <a href="/MadGammon.apk.part_ab" download="MadGammon.apk.part_ab">Часть 2 (25М)</a>
+            <a href="/MadGammon.apk.part_ac" download="MadGammon.apk.part_ac">Часть 3 (6М)</a>
+        </div>
+
+        <div class="meta-box" style="margin-top: 14px; background: rgba(234, 179, 8, 0.08); border-color: rgba(234, 179, 8, 0.3);">
+            <div style="font-weight: 600; color: #FACC15; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+                <span>ℹ️ Если Android / Play Защита выдаёт предупреждение:</span>
+            </div>
+            <p style="font-size: 12px; line-height: 1.5; color: #D1D5DB; margin-bottom: 6px;">
+                Так как приложение собирается в среде разработчика без регистрации в Google Play Store, встроенный антивирус Android (Google Play Protect) по умолчанию блокирует неизвестные APK.
+            </p>
+            <p style="font-size: 12px; line-height: 1.5; color: #A7F3D0;">
+                👉 В появившемся окне нажмите <strong>«Подробнее» (More details)</strong>, а затем <strong>«Всё равно установить» (Install anyway)</strong>.
+            </p>
+        </div>
+
+        <div class="meta-box">
+            <div class="meta-row">
+                <span>Пакет:</span>
+                <span class="meta-val">com.aistudio.crazybackgammon.vymkwq</span>
+            </div>
+            <div class="meta-row">
+                <span>Размер файла:</span>
+                <span class="meta-val">66.7 МБ (69 981 771 байт)</span>
+            </div>
+            <div class="meta-row">
+                <span>Архитектуры (ABI):</span>
+                <span class="meta-val">arm64-v8a, x86_64</span>
+            </div>
+            <div class="meta-row">
+                <span>Схема подписи:</span>
+                <span class="meta-val">APK Signature Scheme v2 (Signed)</span>
+            </div>
+            <div class="meta-row">
+                <span>Тесты:</span>
+                <span class="meta-val">44/44 Unit & Robolectric PASSED</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    async function startChunkedDownload() {
+        const btn = document.getElementById('downloadBtn');
+        const btnText = document.getElementById('btnText');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const statusText = document.getElementById('statusText');
+
+        btn.disabled = true;
+        btn.style.opacity = '0.7';
+        progressContainer.style.display = 'block';
+
+        const parts = [
+            'MadGammon.apk.part_aa',
+            'MadGammon.apk.part_ab',
+            'MadGammon.apk.part_ac'
+        ];
+
+        const blobs = [];
+        try {
+            for (let i = 0; i < parts.length; i++) {
+                const partName = parts[i];
+                statusText.innerText = `Загрузка части ${i + 1} из ${parts.length}...`;
+                progressBar.style.width = `${Math.round((i / parts.length) * 100)}%`;
+
+                const resp = await fetch('/' + partName);
+                if (!resp.ok) {
+                    throw new Error(`Ошибка загрузки ${partName}: HTTP ${resp.status}`);
+                }
+                const buf = await resp.arrayBuffer();
+                blobs.push(buf);
+            }
+
+            statusText.innerText = 'Сборка APK файла...';
+            progressBar.style.width = '100%';
+
+            const finalBlob = new Blob(blobs, { type: 'application/vnd.android.package-archive' });
+            const downloadUrl = URL.createObjectURL(finalBlob);
+            const a = document.createElement('a');
+            a.href = downloadUrl;
+            a.download = 'MadGammon.apk';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(downloadUrl), 30000);
+
+            statusText.innerText = '✔ Загрузка успешно завершена!';
+            btnText.innerText = 'Скачать снова';
+        } catch (e) {
+            statusText.innerText = 'Ошибка: ' + e.message + '. Скачайте части вручную ниже.';
+            btnText.innerText = 'Повторить попытку';
+        } finally {
+            btn.disabled = false;
+            btn.style.opacity = '1';
+        }
+    }
+    </script>
+</body>
+</html>

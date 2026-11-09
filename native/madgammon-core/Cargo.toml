@@ -1,0 +1,48 @@
+[package]
+name = "madgammon-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["MadGammon Team"]
+description = "Sovereign Crypto-Privacy Backgammon Engine and Zero-Knowledge Transport Core"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+name = "madgammon_core"
+
+[[bin]]
+name = "madgammon-cli"
+path = "src/bin/main.rs"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+
+[dependencies]
+# Serialization & Errors
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+hex = "0.4"
+
+# Cryptography & Security
+rand = "0.8"
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2.5"
+zeroize = { version = "1.8", features = ["derive"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+
+# Erasure Coding & Mnemonic
+reed-solomon-erasure = "6.0"
+bip39 = "2.1"
+
+# Bindings
+uniffi = { version = "0.28", features = ["cli"] }
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }
+
+[dev-dependencies]
+rand_chacha = "0.3"

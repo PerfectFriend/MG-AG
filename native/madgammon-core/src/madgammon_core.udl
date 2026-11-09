@@ -1,0 +1,52 @@
+namespace madgammon_core {
+    string madgammon_core_version();
+    string generate_bip39_mnemonic_12();
+    string generate_bip39_mnemonic_24();
+    boolean validate_bip39_mnemonic(string phrase);
+    sequence<string> generate_sas_emojis(sequence<u8> shared_secret);
+};
+
+enum CorePlayer { "White", "Black" };
+enum CoreGameMode { "Long", "Short", "Mad" };
+
+dictionary CoreMove { i8 from_rel; i8 to_rel; u8 die_used; };
+dictionary CoreDiceOutcome { u8 die1; u8 die2; boolean is_valid; string audit_proof; };
+
+interface NativeMentalDiceEngine {
+    constructor();
+    sequence<u8> start_local_roll();
+    void set_peer_commitment(sequence<u8> commitment);
+    sequence<u8> reveal_local_seed();
+    u8 reveal_local_value();
+    CoreDiceOutcome verify_and_compute(sequence<u8> peer_seed, u8 peer_secret_value);
+    void reset();
+};
+
+interface NativeShardedVault {
+    constructor(u32 data_shards, u32 parity_shards);
+    sequence<sequence<u8>> encode(sequence<u8> payload);
+    sequence<u8> reconstruct(sequence<sequence<u8>?> shards, u32 original_length);
+};
+
+interface NativeTunPacketRouter {
+    constructor();
+    boolean is_active();
+    void start(i32 tun_fd, string socks5_host, u16 socks5_port, u16 mtu);
+    void stop();
+};
+
+interface NativeBoardEngine {
+    [Name=new_long]
+    constructor();
+    [Name=new_short]
+    constructor();
+    [Name=new_mad]
+    constructor();
+    string get_state_json();
+    boolean load_state_json(string json);
+    sequence<CoreMove> get_legal_moves(sequence<u8> dice, boolean is_kush);
+    boolean apply_move(i8 from_rel, i8 to_rel, u8 die_used);
+    void end_turn();
+    boolean has_won(boolean white);
+    u32 pip_count(boolean white);
+};

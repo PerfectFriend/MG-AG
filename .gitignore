@@ -1,0 +1,45 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.env
+debug.keystore
+.build-outputs/
+app/build/
+.aistudio/
+
+
+# Release keystore - NEVER commit
+*.jks
+*.keystore
+
+# APK artifacts
+*.apk
+*.apk.part_*
+*.aab
+
+# Compiled native libs (desktop)
+desktop/*.so
+desktop/logs/
+
+# Rust build artifacts
+**/target/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# APK signing artifacts
+*.idsig

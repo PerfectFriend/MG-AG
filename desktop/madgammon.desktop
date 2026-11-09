@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MadGammon
+GenericName=Backgammon Game
+Comment=Sovereign Crypto-Privacy Backgammon — Шеш-Беш / BG-AG
+Exec=/home/thomas/Projects/BG-AG/desktop/run_madgammon.sh
+Icon=madgammon
+Path=/home/thomas/Projects/BG-AG/desktop
+Categories=Game;BoardGame;
+Terminal=false
+StartupWMClass=MadGammon
+Keywords=backgammon;nardi;nardy;gammon;шеш-беш;нарды;

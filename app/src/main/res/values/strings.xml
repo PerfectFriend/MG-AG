@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">SHESH BESH</string>
+    <string name="app_name_game">SHESH BESH</string>
+    <string name="app_name_messenger">SimpleX Chat</string>
+    <string name="attribution_vpn_label">Foxray Core VPN Tunneling</string>
+    <string name="attribution_radio_label">SimpleX Secure Radio Streaming</string>
+</resources>

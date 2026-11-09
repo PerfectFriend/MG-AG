@@ -1,0 +1,85 @@
+name: Build Native Rust Core and Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-rust-core:
+    name: Build Rust Core (UniFFI & cargo-ndk)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Install cargo-ndk and uniffi-bindgen
+        run: |
+          cargo install cargo-ndk
+          cargo install uniffi-bindgen --version 0.28.0
+
+      - name: Run Host Unit Tests
+        run: |
+          cd native/madgammon-core
+          cargo test --verbose
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Compile Native Shared Objects (.so)
+        run: |
+          chmod +x scripts/build_rust_core.sh
+          ./scripts/build_rust_core.sh
+
+      - name: Upload Native Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jniLibs-binaries
+          path: app/src/main/jniLibs/
+
+  build-android-app:
+    name: Assemble Android APK
+    needs: build-rust-core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Built jniLibs
+        uses: actions/download-artifact@v4
+        with:
+          name: jniLibs-binaries
+          path: app/src/main/jniLibs/
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Build Debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Package & Split APK for Cloud Run Distribution
+        run: |
+          chmod +x scripts/distribute_apk_chunks.sh
+          ./scripts/distribute_apk_chunks.sh
+
+      - name: Upload Final APK Chunks
+        uses: actions/upload-artifact@v4
+        with:
+          name: madgammon-apk-package
+          path: |
+            MadGammon.apk
+            MadGammon.apk.part_*
