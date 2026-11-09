@@ -32,11 +32,9 @@ object SimpleXProtocol {
         "xftp://s757c3272nkyoxx4g7y445v37v56a22g4y77f2y64f33k2l5j2w5fsqd.onion"
     )
 
-    // Default STUN/TURN relays used by SimpleX Chat for audio/video calls
+    // Sovereign STUN/TURN relays used by SimpleX Chat for audio/video calls (Google STUN strictly excluded)
     val DEFAULT_STUN_SERVERS = listOf(
-        "stun:stun.simplex.im:3478",
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302"
+        "stun:stun.simplex.im:3478"
     )
 
     val DEFAULT_TURN_SERVERS = listOf(
@@ -50,7 +48,8 @@ object SimpleXProtocol {
         val queueId: String,
         val isGroup: Boolean,
         val isOneTime: Boolean,
-        val roomType: String
+        val roomType: String,
+        val peerDhKeyBase64: String? = null
     )
 
     /**
@@ -64,6 +63,7 @@ object SimpleXProtocol {
         var server = DEFAULT_SMP_SERVERS.first()
         var contactName = "Собеседник"
         var queueId = UUID.randomUUID().toString().take(8)
+        var peerDhKey: String? = null
 
         try {
             if (input.startsWith("https://simplex.chat/contact#") || input.startsWith("simplex://contact#")) {
@@ -74,9 +74,21 @@ object SimpleXProtocol {
                     if (parts.size == 2) parts[0] to Uri.decode(parts[1]) else parts[0] to ""
                 }
 
-                params["smp"]?.let { if (it.isNotBlank()) server = it }
+                params["smp"]?.let {
+                    if (it.isNotBlank()) {
+                        if (it.contains("/")) {
+                            server = it.substringBeforeLast("/")
+                            if (params["id"].isNullOrBlank()) {
+                                queueId = it.substringAfterLast("/")
+                            }
+                        } else {
+                            server = it
+                        }
+                    }
+                }
                 params["name"]?.let { if (it.isNotBlank()) contactName = it }
                 params["id"]?.let { if (it.isNotBlank()) queueId = it }
+                peerDhKey = params["dh"]
                 if (params["use"] == "1" || params["onetime"] == "true") {
                     isOneTime = true
                 }
@@ -89,6 +101,7 @@ object SimpleXProtocol {
                 }
                 params["title"]?.let { if (it.isNotBlank()) contactName = it }
                 params["id"]?.let { if (it.isNotBlank()) queueId = it }
+                peerDhKey = params["dh"]
                 if (contactName == "Собеседник") contactName = "Групповой чат SimpleX"
             } else if (input.startsWith("smp://") || input.startsWith("smps://")) {
                 server = input.substringBeforeLast("/")
@@ -116,21 +129,27 @@ object SimpleXProtocol {
             queueId = queueId,
             isGroup = isGroup,
             isOneTime = isOneTime,
-            roomType = roomType
+            roomType = roomType,
+            peerDhKeyBase64 = peerDhKey
         )
     }
 
     /**
      * Generates an authentic SimpleX Chat invitation link for the local user.
      */
-    fun createInvitationLink(localUserHandle: String, isOneTime: Boolean = false): String {
+    fun createInvitationLink(
+        localUserHandle: String,
+        isOneTime: Boolean = false,
+        dhPublicKeyBase64: String? = null
+    ): String {
         val randomBytes = ByteArray(16)
         SecureRandom().nextBytes(randomBytes)
         val queueToken = Base64.encodeToString(randomBytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         val server = DEFAULT_SMP_SERVERS.first()
         val encServer = Uri.encode(server)
         val useParam = if (isOneTime) "&use=1" else ""
-        return "https://simplex.chat/contact#/?v=1-4&smp=$encServer%2F$queueToken&name=${Uri.encode(localUserHandle)}$useParam"
+        val dhParam = if (!dhPublicKeyBase64.isNullOrBlank()) "&dh=${Uri.encode(dhPublicKeyBase64)}" else ""
+        return "https://simplex.chat/contact#/?v=1-4&smp=$encServer%2F$queueToken&name=${Uri.encode(localUserHandle)}$useParam$dhParam"
     }
 
     /**

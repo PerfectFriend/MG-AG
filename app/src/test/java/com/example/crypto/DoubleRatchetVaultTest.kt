@@ -56,4 +56,33 @@ class DoubleRatchetVaultTest {
         val unpadded = DoubleRatchetVault.unpadFrom16Kb(padded)
         assertArrayEquals(payload, unpadded)
     }
+
+    @Test
+    fun testEncryptedRatchetMessageSerialization() {
+        val sharedRootKey = ByteArray(32) { (it * 3).toByte() }
+        val aliceKeyPair = DoubleRatchetVault.generateKeyPair()
+        val bobKeyPair = DoubleRatchetVault.generateKeyPair()
+
+        val aliceVault = DoubleRatchetVault(sharedRootKey.clone(), aliceKeyPair, bobKeyPair.public)
+        val bobVault = DoubleRatchetVault(sharedRootKey.clone(), bobKeyPair, null)
+
+        val text = "Wire protocol test for SimpleX message serialization".toByteArray(Charsets.UTF_8)
+        val enc = aliceVault.ratchetEncrypt(text)
+
+        // Serialize to wire bytes
+        val wireBytes = enc.serialize()
+        assertTrue(wireBytes.isNotEmpty())
+
+        // Deserialize on Bob's side
+        val deserialized = DoubleRatchetVault.EncryptedRatchetMessage.deserialize(wireBytes)
+        assertEquals(enc.header.messageNumber, deserialized.header.messageNumber)
+        assertEquals(enc.header.previousChainLength, deserialized.header.previousChainLength)
+        assertArrayEquals(enc.header.dhPublicKeyBytes, deserialized.header.dhPublicKeyBytes)
+        assertArrayEquals(enc.iv, deserialized.iv)
+        assertArrayEquals(enc.cipherText, deserialized.cipherText)
+
+        // Decrypt
+        val decrypted = bobVault.ratchetDecrypt(deserialized)
+        assertEquals(String(text), String(decrypted))
+    }
 }

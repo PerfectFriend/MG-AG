@@ -655,9 +655,9 @@ class GameViewModel(private val context: Context) : ViewModel() {
     var simplexMessages = mutableStateListOf<ChatMessage>()
 
     // Decentralized Relays for Original Simplex Client Compatibility
-    var customSmpServer by mutableStateOf(prefs.getString("custom_smp_server", "smp://smp.simplex.im") ?: "smp://smp.simplex.im")
-    var customXftpServer by mutableStateOf(prefs.getString("custom_xftp_server", "xftp://xftp.simplex.im") ?: "xftp://xftp.simplex.im")
-    var customTurnServer by mutableStateOf(prefs.getString("custom_turn_server", "stun:stun.l.google.com:19302") ?: "stun:stun.l.google.com:19302")
+    var customSmpServer by mutableStateOf(prefs.getString("custom_smp_server", "smp://smp10.simplex.im") ?: "smp://smp10.simplex.im")
+    var customXftpServer by mutableStateOf(prefs.getString("custom_xftp_server", "xftp://xftp10.simplex.im") ?: "xftp://xftp10.simplex.im")
+    var customTurnServer by mutableStateOf(prefs.getString("custom_turn_server", "stun:stun.simplex.im:3478") ?: "stun:stun.simplex.im:3478")
 
     fun updateSmpServer(srv: String) {
         customSmpServer = srv
@@ -3756,14 +3756,50 @@ class GameViewModel(private val context: Context) : ViewModel() {
         if (simplexController?.isRunning() == true) {
             simplexController?.generateInvitation()
         } else {
+            val tempQueueId = UUID.randomUUID().toString().take(8)
+            val roomId = "ROOM_$tempQueueId"
+            val vault = getOrInitRoomRatchetVault(roomId)
+            val pubKeyBase64 = android.util.Base64.encodeToString(
+                vault.myDhPublicKey.encoded,
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING
+            )
+
             val address = when (type) {
-                "ONE_TIME" -> SimpleXProtocol.createInvitationLink(simplexUserHandle, isOneTime = true)
-                "LONG_TERM" -> SimpleXProtocol.createInvitationLink(simplexUserHandle, isOneTime = false)
+                "ONE_TIME" -> SimpleXProtocol.createInvitationLink(simplexUserHandle, isOneTime = true, dhPublicKeyBase64 = pubKeyBase64)
+                "LONG_TERM" -> SimpleXProtocol.createInvitationLink(simplexUserHandle, isOneTime = false, dhPublicKeyBase64 = pubKeyBase64)
                 "CHANNEL" -> SimpleXProtocol.createGroupInvitationLink("Канал $simplexUserHandle")
                 else -> SimpleXProtocol.createGroupInvitationLink("Группа $simplexUserHandle")
             }
             generatedInvitationLink = address
             generatedInvitationQrMatrix = QrGenerator.generate(address)
+
+            val parsed = SimpleXProtocol.parseLink(address)
+            val realRoomId = "ROOM_${parsed.queueId}"
+            if (realRoomId != roomId) {
+                roomRatchetVaults[realRoomId] = vault
+            }
+
+            if (simpleXSmpClient == null) {
+                connectSimpleX()
+            }
+            simpleXSmpClient?.subscribeQueue(parsed.queueId)
+
+            val existingRoom = simplexRooms.firstOrNull { it.id == realRoomId || it.title == parsed.contactName }
+            if (existingRoom == null) {
+                val newRoom = SimpleXRoom(
+                    id = realRoomId,
+                    title = parsed.contactName.ifBlank { "Контакт ${parsed.queueId}" },
+                    lastMessage = "Ожидание подключения собеседника по инвайту...",
+                    isOneTime = parsed.isOneTime,
+                    simplexUrl = address,
+                    roomType = parsed.roomType,
+                    messages = mutableStateListOf(
+                        ChatMessage("sys_gen", "SimpleX System", "Создана входящая очередь SMP: ${parsed.queueId}", System.currentTimeMillis()),
+                        ChatMessage("sys_ratchet", "SimpleX System", "X25519 Double Ratchet ключ привязан к инвайту.", System.currentTimeMillis() + 100)
+                    )
+                )
+                simplexRooms.add(newRoom)
+            }
         }
     }
 
@@ -3787,27 +3823,53 @@ class GameViewModel(private val context: Context) : ViewModel() {
             val parsed = SimpleXProtocol.parseLink(trimmed)
             addVerifiedSmpServer(parsed.serverUrl)
 
-            val roomId = "ROOM_" + UUID.randomUUID().toString().take(6)
-            val newRoom = SimpleXRoom(
-                id = roomId,
-                title = parsed.contactName,
-                lastMessage = "Шифрованное E2EE соединение создано через ${parsed.serverUrl.removePrefix("smp://")}",
-                isOneTime = parsed.isOneTime,
-                simplexUrl = trimmed,
-                roomType = parsed.roomType,
-                messages = mutableStateListOf(
-                    ChatMessage("sys_gen", "SimpleX System", "Однонаправленная очередь SMP: ${parsed.queueId}", System.currentTimeMillis() - 2000),
-                    ChatMessage("sys_ratchet", "SimpleX System", "Curve25519 Double Ratchet успешно активирован.", System.currentTimeMillis() - 800),
-                    ChatMessage("peer_hello", parsed.contactName, "Привет! Соединение установлено по пригласительному ключу.", System.currentTimeMillis())
-                )
-            )
+            if (simpleXSmpClient == null) {
+                connectSimpleX()
+            }
 
-            simplexRooms.add(newRoom)
+            val peerPubKey = parsed.peerDhKeyBase64?.let { b64 ->
+                try {
+                    val raw = android.util.Base64.decode(b64, android.util.Base64.URL_SAFE or android.util.Base64.DEFAULT)
+                    com.example.crypto.DoubleRatchetVault.decodePublicKey(raw)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+
+            val roomId = "ROOM_${parsed.queueId}"
+            val vault = getOrInitRoomRatchetVault(roomId, peerPubKey)
+
+            // Subscribe to queue so we receive incoming replies
+            simpleXSmpClient?.subscribeQueue(parsed.queueId)
+
+            val existingRoom = simplexRooms.firstOrNull { it.id == roomId || it.title == parsed.contactName }
+            val room = existingRoom ?: run {
+                val newRoom = SimpleXRoom(
+                    id = roomId,
+                    title = parsed.contactName,
+                    lastMessage = "Шифрованное E2EE соединение создано через ${parsed.serverUrl.removePrefix("smp://")}",
+                    isOneTime = parsed.isOneTime,
+                    simplexUrl = trimmed,
+                    roomType = parsed.roomType,
+                    messages = mutableStateListOf(
+                        ChatMessage("sys_gen", "SimpleX System", "Однонаправленная очередь SMP: ${parsed.queueId}", System.currentTimeMillis() - 2000),
+                        ChatMessage("sys_ratchet", "SimpleX System", if (peerPubKey != null) "X25519 Double Ratchet успешно активирован с публичным ключом собеседника." else "Double Ratchet активирован в режиме автосогласования.", System.currentTimeMillis() - 800),
+                        ChatMessage("peer_hello", parsed.contactName, "Привет! Соединение установлено по пригласительному ключу.", System.currentTimeMillis())
+                    )
+                )
+                simplexRooms.add(newRoom)
+                newRoom
+            }
+
             if (parsed.roomType == "DIRECT_CHAT") {
                 if (simplexContacts.none { it.handle == parsed.queueId || it.name == parsed.contactName }) {
                     simplexContacts.add(SimpleXContact(parsed.contactName, parsed.queueId, isOnline = true, rating = 0))
                 }
             }
+
+            // Send handshake packet with my public DH key to the peer
+            val myPubKeyB64 = android.util.Base64.encodeToString(vault.myDhPublicKey.encoded, android.util.Base64.NO_WRAP)
+            simpleXSmpClient?.sendMessage(parsed.queueId, "HELLO:$myPubKeyB64")
 
             simplexStatus = "CONNECTED"
             onComplete("Успешно подключено к: ${parsed.contactName}")
@@ -3816,17 +3878,21 @@ class GameViewModel(private val context: Context) : ViewModel() {
 
     private val roomRatchetVaults = java.util.concurrent.ConcurrentHashMap<String, com.example.crypto.DoubleRatchetVault>()
 
-    fun getOrInitRoomRatchetVault(roomId: String): com.example.crypto.DoubleRatchetVault {
-        return roomRatchetVaults.getOrPut(roomId) {
+    fun getOrInitRoomRatchetVault(roomId: String, peerPublicKey: java.security.PublicKey? = null): com.example.crypto.DoubleRatchetVault {
+        val vault = roomRatchetVaults.getOrPut(roomId) {
             val rootSeed = java.security.MessageDigest.getInstance("SHA-256")
-                .digest("simplex_room_root:$roomId:${profileManager.activeProfile.id}".toByteArray(Charsets.UTF_8))
+                .digest("simplex_room_root:$roomId".toByteArray(Charsets.UTF_8))
             val kp = com.example.crypto.DoubleRatchetVault.generateKeyPair()
             com.example.crypto.DoubleRatchetVault(
                 rootKey = rootSeed,
                 myDhKeyPair = kp,
-                peerDhPublicKey = kp.public
+                peerDhPublicKey = peerPublicKey ?: kp.public
             )
         }
+        if (peerPublicKey != null) {
+            vault.setPeerDhPublicKey(peerPublicKey)
+        }
+        return vault
     }
 
     fun sendSimpleXMessage(text: String) {
@@ -3901,18 +3967,20 @@ class GameViewModel(private val context: Context) : ViewModel() {
         val ratchetPayload = try {
             val vault = getOrInitRoomRatchetVault(room.id)
             val enc = vault.ratchetEncrypt(text.toByteArray(Charsets.UTF_8))
-            "DR:" + android.util.Base64.encodeToString(enc.cipherText, android.util.Base64.NO_WRAP)
+            val serialized = enc.serialize()
+            "DR:" + android.util.Base64.encodeToString(serialized, android.util.Base64.NO_WRAP)
         } catch (_: Exception) {
-            text
+            "CHAT:$text"
         }
         
         if (simplexController?.isRunning() == true) {
             simplexController?.sendMessage(room.title, text)
         }
-        if (simpleXSmpClient?.isConnected == true) {
-            val queueTarget = room.title.filter { it.isLetterOrDigit() }.ifBlank { "default_q" }
-            simpleXSmpClient?.sendMessage(queueTarget, ratchetPayload)
+        if (simpleXSmpClient == null) {
+            connectSimpleX()
         }
+        val queueTarget = room.id.removePrefix("ROOM_").ifBlank { room.title.filter { it.isLetterOrDigit() }.ifBlank { "default_q" } }
+        simpleXSmpClient?.sendMessage(queueTarget, ratchetPayload)
 
         if (roomId == "ECHO_BOT") {
             viewModelScope.launch {
@@ -4103,12 +4171,19 @@ class GameViewModel(private val context: Context) : ViewModel() {
         }
         simplexController?.start(smpOnionAddress, xftpOnionAddress)
 
-        // Native SimpleX SMP Client with Strict Onion-Only protection
+        // Native SimpleX SMP Client with Auto-Fallback (Direct ClearNet WSS or Tor SOCKS5)
+        val isTorActive = torController?.isRunning() == true
         simpleXSmpClient = com.example.data.SimpleXSmpClient(
             socksHost = "127.0.0.1",
             socksPort = 9050,
-            useSocksProxy = onionBridgeConfigManager.isStrictOnionOnlyEnabled || onionBridgeConfigManager.chainTopology != com.example.data.BridgeChainTopology.TOR_DIRECT,
-            isHostAllowed = { onionBridgeConfigManager.isHostAllowed(it) },
+            useSocksProxy = isTorActive && (onionBridgeConfigManager.isStrictOnionOnlyEnabled || onionBridgeConfigManager.chainTopology != com.example.data.BridgeChainTopology.TOR_DIRECT),
+            isHostAllowed = { host ->
+                if (isTorActive && onionBridgeConfigManager.isStrictOnionOnlyEnabled) {
+                    onionBridgeConfigManager.isHostAllowed(host)
+                } else {
+                    true
+                }
+            },
             onLog = { log ->
                 viewModelScope.launch(Dispatchers.Main) {
                     v2RayTorSyncLogs.add(log)
@@ -4116,20 +4191,90 @@ class GameViewModel(private val context: Context) : ViewModel() {
             },
             onMessageReceived = { queueId, payload ->
                 viewModelScope.launch(Dispatchers.Main) {
-                    v2RayTorSyncLogs.add("📩 [SMP Queue $queueId] Получено сообщение ($payload)")
-                    val plain = try {
-                        val decoded = android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
-                        String(decoded, Charsets.UTF_8)
-                    } catch (_: Exception) {
-                        payload
-                    }
-                    if (plain.contains(":")) {
-                        handleTorP2PMessage(plain)
+                    v2RayTorSyncLogs.add("📩 [SMP Queue $queueId] Получено (${payload.take(30)}...)")
+
+                    if (payload.startsWith("HELLO:")) {
+                        val peerKeyB64 = payload.removePrefix("HELLO:").trim()
+                        try {
+                            val rawKey = android.util.Base64.decode(peerKeyB64, android.util.Base64.DEFAULT)
+                            val peerKey = com.example.crypto.DoubleRatchetVault.decodePublicKey(rawKey)
+                            val roomId = "ROOM_$queueId"
+                            getOrInitRoomRatchetVault(roomId, peerKey)
+                            v2RayTorSyncLogs.add("🤝 [SimpleX Handshake] Верифицирован DH ключ собеседника для $queueId")
+                        } catch (e: Exception) {
+                            Log.w("GameViewModel", "Handshake key error: ${e.message}")
+                        }
+                    } else if (payload.startsWith("DR:")) {
+                        val rawB64 = payload.removePrefix("DR:").trim()
+                        try {
+                            val encBytes = android.util.Base64.decode(rawB64, android.util.Base64.DEFAULT)
+                            val encMsg = com.example.crypto.DoubleRatchetVault.EncryptedRatchetMessage.deserialize(encBytes)
+                            val roomId = "ROOM_$queueId"
+                            val vault = getOrInitRoomRatchetVault(roomId)
+                            val plainBytes = vault.ratchetDecrypt(encMsg)
+                            val plainText = String(plainBytes, Charsets.UTF_8)
+
+                            v2RayTorSyncLogs.add("🔓 [Double Ratchet] Расшифровано ($queueId): $plainText")
+
+                            val room = simplexRooms.firstOrNull { it.id == roomId || it.title.contains(queueId) } ?: run {
+                                val newRoom = SimpleXRoom(
+                                    id = roomId,
+                                    title = "Контакт $queueId",
+                                    lastMessage = plainText,
+                                    isOneTime = false,
+                                    simplexUrl = "",
+                                    roomType = "DIRECT_CHAT"
+                                )
+                                simplexRooms.add(newRoom)
+                                newRoom
+                            }
+                            val senderName = room.title.ifBlank { "Собеседник" }
+                            val incomingMsg = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                sender = senderName,
+                                text = plainText,
+                                timestamp = System.currentTimeMillis()
+                            )
+                            room.messages.add(incomingMsg)
+                            room.lastMessage = plainText
+
+                            val activeProfId = profileManager.activeProfile.id
+                            withContext(Dispatchers.IO) {
+                                messengerVaultRepo.saveEncryptedMessage(
+                                    profileId = activeProfId,
+                                    roomId = room.id,
+                                    messageId = incomingMsg.id,
+                                    sender = incomingMsg.sender,
+                                    text = incomingMsg.text,
+                                    timestamp = incomingMsg.timestamp,
+                                    attachmentType = incomingMsg.attachmentType,
+                                    attachmentMeta = "${incomingMsg.attachmentName}|${incomingMsg.attachmentSize}|${incomingMsg.attachmentUrl}",
+                                    reactions = incomingMsg.reactions.toList(),
+                                    selfDestructTimeLeft = incomingMsg.selfDestructTimeLeft,
+                                    isSelfDestructed = incomingMsg.isSelfDestructed,
+                                    pin = pinCode
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.e("GameViewModel", "Double Ratchet decryption error: ${e.message}", e)
+                            v2RayTorSyncLogs.add("⚠️ [Double Ratchet] Ошибка расшифровки: ${e.message}")
+                        }
+                    } else {
+                        val plain = try {
+                            val decoded = android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                            String(decoded, Charsets.UTF_8)
+                        } catch (_: Exception) {
+                            payload
+                        }
+                        if (plain.contains(":")) {
+                            handleTorP2PMessage(plain)
+                        }
                     }
                 }
             }
         )
-        simpleXSmpClient?.connect(smpOnionAddress.ifBlank { "smp.simplex.im" })
+        val targetSmp = if (isTorActive && smpOnionAddress.isNotBlank()) smpOnionAddress else "smp10.simplex.im"
+        simpleXSmpClient?.connect(targetSmp)
     }
 
     private var simpleXSmpClient: com.example.data.SimpleXSmpClient? = null

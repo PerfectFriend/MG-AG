@@ -68,6 +68,15 @@ class DoubleRatchetVault(
             mac.init(SecretKeySpec(key, "HmacSHA256"))
             return mac.doFinal(input)
         }
+
+        fun decodePublicKey(encodedBytes: ByteArray): PublicKey {
+            val spec = X509EncodedKeySpec(encodedBytes)
+            return try {
+                java.security.KeyFactory.getInstance("X25519", "BC").generatePublic(spec)
+            } catch (_: Throwable) {
+                java.security.KeyFactory.getInstance("EC").generatePublic(spec)
+            }
+        }
     }
 
     data class RatchetHeader(
@@ -80,7 +89,57 @@ class DoubleRatchetVault(
         val header: RatchetHeader,
         val iv: ByteArray,
         val cipherText: ByteArray
-    )
+    ) {
+        fun serialize(): ByteArray {
+            val totalSize = 2 + header.dhPublicKeyBytes.size + 4 + 4 + 2 + iv.size + 4 + cipherText.size
+            val buf = ByteBuffer.allocate(totalSize)
+            buf.putShort(header.dhPublicKeyBytes.size.toShort())
+            buf.put(header.dhPublicKeyBytes)
+            buf.putInt(header.messageNumber)
+            buf.putInt(header.previousChainLength)
+            buf.putShort(iv.size.toShort())
+            buf.put(iv)
+            buf.putInt(cipherText.size)
+            buf.put(cipherText)
+            return buf.array()
+        }
+
+        companion object {
+            fun deserialize(bytes: ByteArray): EncryptedRatchetMessage {
+                val buf = ByteBuffer.wrap(bytes)
+                val dhKeyLen = buf.short.toInt() and 0xFFFF
+                val dhKeyBytes = ByteArray(dhKeyLen)
+                buf.get(dhKeyBytes)
+                val msgNum = buf.int
+                val prevChainLen = buf.int
+                val ivLen = buf.short.toInt() and 0xFFFF
+                val iv = ByteArray(ivLen)
+                buf.get(iv)
+                val ctLen = buf.int
+                val ct = ByteArray(ctLen)
+                buf.get(ct)
+                return EncryptedRatchetMessage(
+                    header = RatchetHeader(dhKeyBytes, msgNum, prevChainLen),
+                    iv = iv,
+                    cipherText = ct
+                )
+            }
+        }
+    }
+
+    val myDhPublicKey: PublicKey
+        get() = myDhKeyPair.public
+
+    @Synchronized
+    fun setPeerDhPublicKey(peerKey: PublicKey) {
+        if (this.peerDhPublicKey == null) {
+            this.peerDhPublicKey = peerKey
+            val dhSecret = computeDh(myDhKeyPair.private, peerKey)
+            val kdfResult = kdfRk(rootKey, dhSecret)
+            rootKey = kdfResult.first
+            sendingChainKey = kdfResult.second
+        }
+    }
 
     private val secureRandom = SecureRandom()
 
@@ -225,15 +284,6 @@ class DoubleRatchetVault(
         ka.init(myPrivateKey)
         ka.doPhase(peerPubKey, true)
         return ka.generateSecret()
-    }
-
-    private fun decodePublicKey(encodedBytes: ByteArray): PublicKey {
-        val spec = X509EncodedKeySpec(encodedBytes)
-        return try {
-            java.security.KeyFactory.getInstance("X25519", "BC").generatePublic(spec)
-        } catch (_: Throwable) {
-            java.security.KeyFactory.getInstance("EC").generatePublic(spec)
-        }
     }
 
     private fun buildAad(header: RatchetHeader, extraAad: ByteArray): ByteArray {
