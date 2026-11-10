@@ -64,6 +64,7 @@ from engine import (
 from ai_bot import BackgammonAI, AIDifficulty
 from network import P2PNetworkManager, get_local_lan_ip
 from radio import RadioPlayer, RadioDialog
+from tg_channel_player import TgChannelPlayerDialog
 from jrebiy import JrebiyDialog
 from secret_layer import PinUnlockDialog, SecretCovertMessengerWindow
 from telegram_messenger import CyberTelegramMessenger
@@ -1582,6 +1583,7 @@ class MadGammonWindow(QMainWindow):
         # Audio Radio Player & Secret Layer
         self.radio_player = RadioPlayer(on_state_changed=self._on_radio_state_changed)
         self.radio_dialog: Optional[RadioDialog] = None
+        self.tg_channel_dialog: Optional[TgChannelPlayerDialog] = None
         self.secret_window: Optional[SecretCovertMessengerWindow] = None
         self.bar_click_timestamps = []
 
@@ -1769,6 +1771,9 @@ class MadGammonWindow(QMainWindow):
 
             act_radio = tray_menu.addAction("📻 Cyberpunk Radio / Радио")
             act_radio.triggered.connect(self._open_radio_dialog)
+
+            act_tg_ch = tray_menu.addAction("📡 Telegram Каналы / Плеер")
+            act_tg_ch.triggered.connect(self._open_tg_channel_dialog)
 
             act_screensaver = tray_menu.addAction("🔲 Visualizer Screensaver / Заставка (F11)")
             act_screensaver.triggered.connect(self._open_avs_screensaver)
@@ -1979,6 +1984,9 @@ class MadGammonWindow(QMainWindow):
         radio_state = "Вкл" if self.radio_player.is_playing else "Выкл"
         act_radio = menu.addAction(f"📻 Cyberpunk Radio ({radio_state})")
         act_radio.triggered.connect(self._open_radio_dialog)
+
+        act_tg_channels = menu.addAction("📡 Telegram Каналы (Channel Player)")
+        act_tg_channels.triggered.connect(self._open_tg_channel_dialog)
 
         act_screensaver = menu.addAction("🔲 Спектральная заставка (AVS Screensaver) [F11]")
         act_screensaver.triggered.connect(self._open_avs_screensaver)
@@ -2890,6 +2898,13 @@ class MadGammonWindow(QMainWindow):
         self.radio_dialog.show()
         self.radio_dialog._toggle_fullscreen_screensaver()
 
+    def _open_tg_channel_dialog(self):
+        log.info("Opening Telegram Channel Player")
+        if self.tg_channel_dialog is None:
+            self.tg_channel_dialog = TgChannelPlayerDialog(parent=self)
+        self.tg_channel_dialog.show()
+        self.tg_channel_dialog.activateWindow()
+
     def _on_radio_state_changed(self, is_playing: bool, station):
         if is_playing and station:
             self.btn_radio.setText(f"📻 {station.name[:14]}...")
@@ -2963,10 +2978,63 @@ class MadGammonWindow(QMainWindow):
 
 
 # ═══════════════════════════════════════════════════════
+#  SINGLE INSTANCE LOCK
+# ═══════════════════════════════════════════════════════
+_instance_lock_file = None
+
+def _acquire_single_instance_lock() -> bool:
+    """
+    Ensures only a single instance of MadGammon runs at any time.
+    Uses kernel-level advisory locking (fcntl.flock) so locks auto-release
+    even on SIGKILL or crash.
+    """
+    global _instance_lock_file
+    import fcntl
+    candidates = [
+        os.environ.get("XDG_RUNTIME_DIR"),
+        "/tmp",
+        os.path.expanduser("~/.madgammon"),
+        os.path.dirname(os.path.abspath(__file__))
+    ]
+    lock_dir = None
+    for c in candidates:
+        if c and os.path.isdir(c) and os.access(c, os.W_OK):
+            lock_dir = c
+            break
+
+    if not lock_dir:
+        lock_dir = "/tmp"
+
+    lock_path = os.path.join(lock_dir, "madgammon_app.lock")
+    try:
+        _instance_lock_file = open(lock_path, "w")
+        fcntl.flock(_instance_lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _instance_lock_file.write(f"{os.getpid()}\n")
+        _instance_lock_file.flush()
+        return True
+    except (BlockingIOError, IOError):
+        return False
+
+
+# ═══════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════
 def main():
     log.info("Starting main() loop...")
+
+    # Single instance guard
+    if not _acquire_single_instance_lock():
+        log.warning("Another instance of MadGammon is already running. Exiting.")
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        QMessageBox.warning(
+            None,
+            "MadGammon уже запущен",
+            "Приложение MadGammon уже работает в системе!\n\n"
+            "Проверьте системный трей (область уведомлений) или панель задач."
+        )
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     app.setApplicationName("MadGammon")
     app.setOrganizationName("BG-AG")

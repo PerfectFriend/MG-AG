@@ -14,6 +14,7 @@ import threading
 import os
 import signal
 import time
+import atexit
 from typing import List, Optional, Callable
 from dataclasses import dataclass
 
@@ -90,6 +91,8 @@ class RadioPlayer:
         self._lock = threading.Lock()
         self._watchdog_thread: Optional[threading.Thread] = None
         self._stop_requested = False
+        # Ensure cleanup on python interpreter exit
+        atexit.register(self._stop_process)
 
     def get_stations(self, cat_filter: str = "ALL") -> List[RadioStation]:
         if cat_filter == "ALL":

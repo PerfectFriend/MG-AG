@@ -41,5 +41,9 @@ desktop/logs/
 __pycache__/
 *.pyc
 
+# Local app data
+.madgammon_data/
+
+
 # APK signing artifacts
 *.idsig
