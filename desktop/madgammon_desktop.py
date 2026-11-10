@@ -67,6 +67,9 @@ from radio import RadioPlayer, RadioDialog
 from jrebiy import JrebiyDialog
 from secret_layer import PinUnlockDialog, SecretCovertMessengerWindow
 from telegram_messenger import CyberTelegramMessenger
+from onboarding import OnboardingWizardDialog
+from bridges_dialog import BridgesDialog
+from crypto_vault import VaultStorage
 from audio_sfx import SoundManager
 from themes import THEMES, get_theme, BoardTheme, DEFAULT_THEME_ID
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -1590,6 +1593,11 @@ class MadGammonWindow(QMainWindow):
         self._build_ui()
         self._setup_tray()
         self._update_board()
+
+        # Check first launch onboarding
+        if not VaultStorage.is_initialized():
+            QTimer.singleShot(250, self._check_first_launch_onboarding)
+
         log.info("MadGammonWindow initialized successfully.")
 
     def _build_ui(self):
@@ -1760,6 +1768,9 @@ class MadGammonWindow(QMainWindow):
 
             act_secret = tray_menu.addAction("🛡️ Security Vault / Секретный слой (Ctrl+Shift+S)")
             act_secret.triggered.connect(self._open_secret_pin_dialog)
+
+            act_bridges = tray_menu.addAction("🌐 Bridges & SMP Relays / Мосты и SMP")
+            act_bridges.triggered.connect(self._open_bridges_dialog)
 
             tray_menu.addSeparator()
 
@@ -1964,6 +1975,9 @@ class MadGammonWindow(QMainWindow):
 
         act_vault = menu.addAction("🛡️ Секретный слой / Vault (Ctrl+Shift+S)")
         act_vault.triggered.connect(self._open_secret_pin_dialog)
+
+        act_bridges = menu.addAction("🌐 Мосты, Прокси и Серверы SMP")
+        act_bridges.triggered.connect(self._open_bridges_dialog)
 
         act_hash = menu.addAction("📊 Аудит хэша доски (SHA-256)")
         act_hash.triggered.connect(self._show_board_hash)
@@ -2868,6 +2882,17 @@ class MadGammonWindow(QMainWindow):
             self.btn_radio.setText("📻 Radio: Off")
             self.btn_radio.setStyleSheet(f"background: {C_BUTTON_BG.name()}; color: {C_TEXT_GOLD.name()}; border-color: {C_TRI_GOLD.name()};")
             self.status_bar.showMessage("Радио выключено")
+
+    def _check_first_launch_onboarding(self):
+        if not VaultStorage.is_initialized():
+            log.info("First launch detected: launching OnboardingWizardDialog")
+            dlg = OnboardingWizardDialog(self)
+            dlg.exec()
+
+    def _open_bridges_dialog(self):
+        log.info("Opening BridgesDialog from desktop UI")
+        dlg = BridgesDialog(self)
+        dlg.exec()
 
     def _open_secret_pin_dialog(self):
         log.info("Opening PIN Unlock Dialog for Secret Layer")

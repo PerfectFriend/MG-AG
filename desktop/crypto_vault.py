@@ -11,8 +11,11 @@ import os
 import struct
 import hashlib
 import hmac
+import json
+import time
+from dataclasses import dataclass
 from typing import Tuple, List, Optional, Dict
-from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
@@ -76,13 +79,60 @@ class HybridKeyExchange:
 
 
 # ─── 3. DOUBLE RATCHET SESSION ENGINE ───
+@dataclass
+class RatchetHeader:
+    dh_public_key_bytes: bytes
+    message_number: int
+    previous_chain_length: int
+
+@dataclass
+class EncryptedRatchetMessage:
+    header: RatchetHeader
+    iv: bytes
+    cipher_text: bytes
+
+    def serialize(self) -> bytes:
+        dh_bytes = self.header.dh_public_key_bytes
+        return (
+            struct.pack(">H", len(dh_bytes)) +
+            dh_bytes +
+            struct.pack(">II", self.header.message_number, self.header.previous_chain_length) +
+            struct.pack(">H", len(self.iv)) +
+            self.iv +
+            struct.pack(">I", len(self.cipher_text)) +
+            self.cipher_text
+        )
+
+    @classmethod
+    def deserialize(cls, data: bytes) -> 'EncryptedRatchetMessage':
+        offset = 0
+        dh_len = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        dh_bytes = data[offset:offset + dh_len]
+        offset += dh_len
+        msg_num, prev_len = struct.unpack_from(">II", data, offset)
+        offset += 8
+        iv_len = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        iv = data[offset:offset + iv_len]
+        offset += iv_len
+        ct_len = struct.unpack_from(">I", data, offset)[0]
+        offset += 4
+        ct = data[offset:offset + ct_len]
+        return cls(
+            header=RatchetHeader(dh_bytes, msg_num, prev_len),
+            iv=iv,
+            cipher_text=ct
+        )
+
 class DoubleRatchetSession:
     """
     Signal Protocol Double Ratchet matching Android DoubleRatchetVault.kt exactly:
     - Root Key + DH Ratchet
     - Sending Chain Key & Receiving Chain Key
     - 16KB constant-size padding
-    - AEAD AES-256-GCM
+    - AEAD AES-256-GCM authentication
+    - Full binary serialization compatible with Kotlin Android app
     """
     def __init__(self, root_key: bytes, my_dh_priv: Optional[x25519.X25519PrivateKey] = None,
                  peer_dh_pub_bytes: Optional[bytes] = None,
@@ -102,6 +152,17 @@ class DoubleRatchetSession:
 
         if self.is_initiator and self.peer_dh_pub_bytes is not None:
             peer_pub = x25519.X25519PublicKey.from_public_bytes(self.peer_dh_pub_bytes)
+            dh_secret = self.my_dh_key.exchange(peer_pub)
+            self.root_key, self.sending_chain_key = self._kdf_rk(self.root_key, dh_secret)
+
+    @property
+    def my_dh_public_bytes(self) -> bytes:
+        return self.my_dh_key.public_key().public_bytes_raw()
+
+    def set_peer_dh_pub(self, peer_pub_bytes: bytes):
+        if self.peer_dh_pub_bytes is None:
+            self.peer_dh_pub_bytes = peer_pub_bytes
+            peer_pub = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
             dh_secret = self.my_dh_key.exchange(peer_pub)
             self.root_key, self.sending_chain_key = self._kdf_rk(self.root_key, dh_secret)
 
@@ -133,25 +194,41 @@ class DoubleRatchetSession:
         dh_secret_send = self.my_dh_key.exchange(new_peer_pub)
         self.root_key, self.sending_chain_key = self._kdf_rk(self.root_key, dh_secret_send)
 
-    def ratchet_encrypt(self, plaintext: bytes) -> Tuple[bytes, int, int, bytes]:
+    def _build_aad(self, header: RatchetHeader, extra_aad: bytes = b"") -> bytes:
+        return (
+            header.dh_public_key_bytes +
+            struct.pack(">II", header.message_number, header.previous_chain_length) +
+            extra_aad
+        )
+
+    def encrypt_message(self, plaintext: bytes, associated_data: bytes = b"") -> EncryptedRatchetMessage:
         if self.sending_chain_key is None:
             if not self.peer_dh_pub_bytes:
-                raise ValueError("Peer DH public key required to initialize sending chain")
-            peer_pub = x25519.X25519PublicKey.from_public_bytes(self.peer_dh_pub_bytes)
-            dh_secret = self.my_dh_key.exchange(peer_pub)
-            self.root_key, self.sending_chain_key = self._kdf_rk(self.root_key, dh_secret)
+                # If no peer key yet, symmetric root ratchet chain key
+                self.sending_chain_key = self._hmac(self.root_key, b"\x02")
+            else:
+                peer_pub = x25519.X25519PublicKey.from_public_bytes(self.peer_dh_pub_bytes)
+                dh_secret = self.my_dh_key.exchange(peer_pub)
+                self.root_key, self.sending_chain_key = self._kdf_rk(self.root_key, dh_secret)
 
         self.sending_chain_key, msg_key = self._kdf_ck(self.sending_chain_key)
-        msg_num = self.sending_msg_num
+        header = RatchetHeader(
+            dh_public_key_bytes=self.my_dh_key.public_key().public_bytes_raw(),
+            message_number=self.sending_msg_num,
+            previous_chain_length=self.prev_sending_chain_len
+        )
         self.sending_msg_num += 1
 
         padded = pad_to_16kb(plaintext)
         iv = secrets.token_bytes(12)
+        aad = self._build_aad(header, associated_data)
         aesgcm = AESGCM(msg_key)
-        ct = aesgcm.encrypt(iv, padded, None)
-        return (self.my_dh_key.public_key().public_bytes_raw(), msg_num, self.prev_sending_chain_len, iv + ct)
+        ct = aesgcm.encrypt(iv, padded, aad)
+        return EncryptedRatchetMessage(header=header, iv=iv, cipher_text=ct)
 
-    def ratchet_decrypt(self, peer_dh_pub_bytes: bytes, msg_num: int, prev_len: int, iv_and_ciphertext: bytes) -> bytes:
+    def decrypt_message(self, msg: EncryptedRatchetMessage, associated_data: bytes = b"") -> bytes:
+        peer_dh_pub_bytes = msg.header.dh_public_key_bytes
+        msg_num = msg.header.message_number
         peer_hex = peer_dh_pub_bytes.hex()
         skipped = self.skipped_message_keys.pop((peer_hex, msg_num), None)
 
@@ -173,11 +250,21 @@ class DoubleRatchetSession:
             self.receiving_chain_key, msg_key = self._kdf_ck(self.receiving_chain_key)
             self.receiving_msg_num += 1
 
+        aad = self._build_aad(msg.header, associated_data)
+        aesgcm = AESGCM(msg_key)
+        padded = aesgcm.decrypt(msg.iv, msg.cipher_text, aad)
+        return unpad_from_16kb(padded)
+
+    def ratchet_encrypt(self, plaintext: bytes) -> Tuple[bytes, int, int, bytes]:
+        msg = self.encrypt_message(plaintext)
+        return (msg.header.dh_public_key_bytes, msg.header.message_number, msg.header.previous_chain_length, msg.iv + msg.cipher_text)
+
+    def ratchet_decrypt(self, peer_dh_pub_bytes: bytes, msg_num: int, prev_len: int, iv_and_ciphertext: bytes) -> bytes:
         iv = iv_and_ciphertext[:12]
         ct = iv_and_ciphertext[12:]
-        aesgcm = AESGCM(msg_key)
-        padded = aesgcm.decrypt(iv, ct, None)
-        return unpad_from_16kb(padded)
+        header = RatchetHeader(peer_dh_pub_bytes, msg_num, prev_len)
+        msg = EncryptedRatchetMessage(header, iv, ct)
+        return self.decrypt_message(msg)
 
 
 # ─── 4. REED-SOLOMON GF(2^8) ERASURE CODED SHARDS ───
@@ -480,4 +567,122 @@ class Bip39Vault:
     def derive_fingerprint(cls, seed: bytes) -> str:
         digest = hashlib.sha256(seed).hexdigest()
         return f"{digest[:4]}:{digest[4:8]}:{digest[8:12]}:{digest[12:16]}"
+
+Bip39 = Bip39Vault
+
+
+# ─── 7. SOVEREIGN IDENTITY & PERSISTENT ENCRYPTED VAULT ───
+class IdentityManager:
+    """
+    Derives cryptographically linked Ed25519 & X25519 Identity keys
+    from BIP-39 mnemonic phrase matching Android Bip39Helper.kt.
+    """
+    @staticmethod
+    def derive_identity(mnemonic: str) -> dict:
+        seed_bytes = Bip39.mnemonic_to_seed(mnemonic)
+
+        # 1. Ed25519 signing keypair
+        hkdf_ed = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"madgammon-kdf-salt",
+            info=b"madgammon-ed25519-identity-key"
+        )
+        ed_seed = hkdf_ed.derive(seed_bytes)
+        ed_priv = ed25519.Ed25519PrivateKey.from_private_bytes(ed_seed)
+        ed_pub_bytes = ed_priv.public_key().public_bytes_raw()
+
+        # 2. X25519 DH keypair
+        hkdf_x = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"madgammon-kdf-salt",
+            info=b"madgammon-x25519-dh-key"
+        )
+        x_seed = hkdf_x.derive(seed_bytes)
+        x_priv = x25519.X25519PrivateKey.from_private_bytes(x_seed)
+        x_pub_bytes = x_priv.public_key().public_bytes_raw()
+
+        # 3. Sovereign Identity Fingerprint
+        h = hashlib.sha256()
+        h.update(b"madgammon-identity-fingerprint")
+        h.update(ed_pub_bytes)
+        fp_bytes = h.digest()
+        fingerprint = ":".join(f"{fp_bytes[i]:02X}{fp_bytes[i+1]:02X}" for i in range(0, 16, 2))
+
+        return {
+            "mnemonic": mnemonic.strip(),
+            "ed25519_priv_hex": ed_seed.hex(),
+            "ed25519_pub_hex": ed_pub_bytes.hex(),
+            "x25519_priv_hex": x_seed.hex(),
+            "x25519_pub_hex": x_pub_bytes.hex(),
+            "fingerprint": fingerprint,
+            "created_at": int(time.time())
+        }
+
+
+class VaultStorage:
+    """
+    Local Encrypted Vault Container protected by Master PIN.
+    Uses 210,000 PBKDF2-HMAC-SHA256 iterations and AES-256-GCM AEAD encryption.
+    """
+    KDF_ITERATIONS = 210000
+    DEFAULT_PATH = os.path.expanduser("~/.madgammon/vault_config.json")
+
+    @classmethod
+    def get_path(cls, custom_path: Optional[str] = None) -> str:
+        return custom_path or cls.DEFAULT_PATH
+
+    @classmethod
+    def is_initialized(cls, path: Optional[str] = None) -> bool:
+        p = cls.get_path(path)
+        return os.path.exists(p) and os.path.getsize(p) > 32
+
+    @classmethod
+    def save_vault(cls, pin: str, data: dict, path: Optional[str] = None) -> bool:
+        p = cls.get_path(path)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+
+        salt = secrets.token_bytes(16)
+        iv = secrets.token_bytes(12)
+        key = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, cls.KDF_ITERATIONS, 32)
+
+        raw_json = json.dumps(data).encode("utf-8")
+        aesgcm = AESGCM(key)
+        ciphertext = aesgcm.encrypt(iv, raw_json, b"MadGammonVaultStorage")
+
+        container = {
+            "version": 2,
+            "kdf_iterations": cls.KDF_ITERATIONS,
+            "salt_hex": salt.hex(),
+            "iv_hex": iv.hex(),
+            "ciphertext_hex": ciphertext.hex()
+        }
+
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(container, f, indent=2)
+        return True
+
+    @classmethod
+    def load_vault(cls, pin: str, path: Optional[str] = None) -> Optional[dict]:
+        p = cls.get_path(path)
+        if not os.path.exists(p):
+            return None
+
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                container = json.load(f)
+
+            salt = bytes.fromhex(container["salt_hex"])
+            iv = bytes.fromhex(container["iv_hex"])
+            ciphertext = bytes.fromhex(container["ciphertext_hex"])
+            iterations = container.get("kdf_iterations", cls.KDF_ITERATIONS)
+
+            key = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, iterations, 32)
+            aesgcm = AESGCM(key)
+            decrypted = aesgcm.decrypt(iv, ciphertext, b"MadGammonVaultStorage")
+            return json.loads(decrypted.decode("utf-8"))
+        except Exception:
+            return None
+
 

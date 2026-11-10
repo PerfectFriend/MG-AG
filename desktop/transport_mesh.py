@@ -13,6 +13,7 @@ import time
 import json
 import struct
 import secrets
+import ssl
 from typing import Optional, Callable, Dict, List, Tuple
 from logger import get_logger
 
@@ -122,50 +123,193 @@ class MultiPathTransportRacer:
 class SimpleXSmpClient:
     """
     Decentralized SimpleX Messaging Protocol (SMP) connection client.
-    Connects to SMP public relay servers (e.g. wss://smp10.simplex.im/smp)
+    Connects to SMP public relay servers (e.g. smp10.simplex.im:5223 TLS)
     providing queue subscription and transmission of Double Ratchet encrypted frames.
+    Supports Auto-Fallback: Tor SOCKS5 (:9050) when Tor is active, Direct TLS when offline.
     """
     SMP_SERVERS = [
         "smp10.simplex.im",
         "smp11.simplex.im",
-        "smp12.simplex.im"
+        "smp12.simplex.im",
+        "smp14.simplex.im",
+        "smp15.simplex.im",
+        "smp16.simplex.im"
     ]
 
-    def __init__(self, on_message: Optional[Callable[[str, bytes], None]] = None,
-                 on_status: Optional[Callable[[str], None]] = None):
+    def __init__(self, on_message: Optional[Callable[[str, str], None]] = None,
+                 on_status: Optional[Callable[[str], None]] = None,
+                 socks_host: str = "127.0.0.1",
+                 socks_port: int = 9050):
         self.on_message = on_message
         self.on_status = on_status
+        self.socks_host = socks_host
+        self.socks_port = socks_port
         self.is_connected = False
+        self.active_server = self.SMP_SERVERS[0]
         self.active_queues: Dict[str, str] = {}  # queue_id -> peer_alias
+        self.pending_outbox: Dict[str, List[str]] = {}
+        self.sock: Optional[socket.socket] = None
         self.rx_thread: Optional[threading.Thread] = None
         self._running = False
+        self._lock = threading.Lock()
 
-    def connect_relay(self, server: Optional[str] = None):
+    def connect_relay(self, server: Optional[str] = None, port: int = 5223, force_socks: bool = False):
         target = server or self.SMP_SERVERS[0]
+        self.active_server = target
         self._running = True
-        self.is_connected = True
-        msg = f"Connected to SimpleX SMP Relay ({target}:443 E2EE queues ready)"
-        log.info(msg)
-        if self.on_status:
-            self.on_status(msg)
+
+        def worker():
+            try:
+                # Check if Tor is listening or if target is .onion
+                is_onion = target.endswith(".onion")
+                use_socks = force_socks or is_onion
+
+                if not use_socks:
+                    try:
+                        s_test = socket.create_connection((self.socks_host, self.socks_port), timeout=0.5)
+                        s_test.close()
+                        use_socks = True
+                    except Exception:
+                        use_socks = False
+
+                transport_mode = f"Tor SOCKS5 ({self.socks_host}:{self.socks_port})" if use_socks else "Direct TLS"
+                log.info("Connecting to SMP Relay %s:%d via %s...", target, port, transport_mode)
+                if self.on_status:
+                    self.on_status(f"Подключение к SimpleX SMP ({target}) через {transport_mode}...")
+
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
+                if use_socks:
+                    import socks
+                    raw_s = socks.socksocket()
+                    raw_s.set_proxy(socks.SOCKS5, self.socks_host, self.socks_port)
+                    raw_s.settimeout(6.0)
+                    raw_s.connect((target, port))
+                else:
+                    raw_s = socket.create_connection((target, port), timeout=6.0)
+
+                self.sock = ctx.wrap_socket(raw_s, server_hostname=target)
+                self.is_connected = True
+                status_msg = f"🟢 Подключено к SimpleX SMP ({target}:5223) через {transport_mode}"
+                log.info(status_msg)
+                if self.on_status:
+                    self.on_status(status_msg)
+
+                # Re-subscribe existing queues
+                for q_id in list(self.active_queues.keys()):
+                    self._send_raw(f"SUB {q_id}\r\n")
+
+                # Flush pending outbox
+                with self._lock:
+                    for q_id, msgs in list(self.pending_outbox.items()):
+                        for payload in msgs:
+                            self._send_raw(f"MSG {q_id} {payload}\r\n")
+                    self.pending_outbox.clear()
+
+                # Start RX thread
+                self.rx_thread = threading.Thread(target=self._rx_loop, daemon=True, name="SimpleX-RX")
+                self.rx_thread.start()
+
+            except Exception as e:
+                self.is_connected = False
+                err_msg = f"🔴 Ошибка подключения к SMP ({target}): {e}"
+                log.warning(err_msg)
+                if self.on_status:
+                    self.on_status(err_msg)
+
+        threading.Thread(target=worker, daemon=True, name="SimpleX-Connect").start()
 
     def create_queue(self, peer_alias: str) -> str:
-        q_id = f"smp_q_{secrets.token_hex(12)}"
+        q_id = f"smp_q_{secrets.token_hex(8)}"
         self.active_queues[q_id] = peer_alias
         log.info("Allocated new isolated SimpleX queue: %s for %s", q_id, peer_alias)
+        self.subscribe_queue(q_id)
         return q_id
 
-    def send_frame(self, queue_id: str, payload_16kb: bytes):
-        """
-        Transmits 16KB padded frame into SimpleX queue.
-        """
-        log.debug("Dispatching %d bytes into SMP queue %s", len(payload_16kb), queue_id)
+    def subscribe_queue(self, queue_id: str):
+        self.active_queues[queue_id] = self.active_queues.get(queue_id, "Контакт")
+        if self.is_connected and self.sock:
+            self._send_raw(f"SUB {queue_id}\r\n")
+            log.info("Subscribed to SMP queue: %s", queue_id)
+
+    def send_message(self, queue_id: str, payload_str: str) -> bool:
+        if self.is_connected and self.sock:
+            cmd = f"MSG {queue_id} {payload_str}\r\n"
+            sent = self._send_raw(cmd)
+            if sent:
+                if self.on_status:
+                    self.on_status(f"SMP TX -> Очередь {queue_id[:10]}... ({len(payload_str)} символов)")
+                return True
+
+        # Buffer if disconnected
+        with self._lock:
+            self.pending_outbox.setdefault(queue_id, []).append(payload_str)
         if self.on_status:
-            self.on_status(f"SMP TX -> Queue {queue_id[:10]}... ({len(payload_16kb)}B)")
+            self.on_status(f"SMP Буферизировано: {queue_id[:10]}... ({len(payload_str)} симв.)")
+        return True
+
+    def send_frame(self, queue_id: str, payload_16kb: bytes):
+        import base64
+        b64 = base64.b64encode(payload_16kb).decode("utf-8")
+        self.send_message(queue_id, f"DR:{b64}")
+
+    def _send_raw(self, cmd: str) -> bool:
+        try:
+            if self.sock:
+                self.sock.sendall(cmd.encode("utf-8"))
+                return True
+        except Exception as e:
+            log.warning("SimpleX send error: %s", e)
+            self.is_connected = False
+        return False
+
+    def _rx_loop(self):
+        buf = ""
+        while self._running and self.is_connected and self.sock:
+            try:
+                data = self.sock.recv(4096)
+                if not data:
+                    break
+                buf += data.decode("utf-8", errors="replace")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    clean = line.strip()
+                    if not clean:
+                        continue
+                    log.debug("SMP Inbound: %s", clean[:80])
+
+                    if clean.startswith("MSG "):
+                        parts = clean.split(" ", 2)
+                        if len(parts) >= 3:
+                            q_id = parts[1]
+                            payload = parts[2]
+                            if self.on_message:
+                                self.on_message(q_id, payload)
+                    elif clean.startswith("OK "):
+                        log.info("SMP ACK: %s", clean[:30])
+                    elif clean.startswith("NEW "):
+                        q_id = clean.replace("NEW ", "").strip()
+                        self.active_queues[q_id] = "Remote"
+                        log.info("SMP Remote Queue Allocated: %s", q_id)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                log.warning("SimpleX RX loop exception: %s", e)
+                break
+        self.is_connected = False
+        log.info("SimpleX RX loop terminated.")
 
     def disconnect(self):
         self._running = False
         self.is_connected = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
 
 
 # ─── 3. LAN PEER DISCOVERY (UDP MULTICAST) ───

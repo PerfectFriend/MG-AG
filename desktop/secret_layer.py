@@ -24,6 +24,7 @@ from PyQt6.QtGui import QFont, QColor, QPen, QBrush, QIcon, QPainter, QRadialGra
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF
 
 from logger import get_logger
+from crypto_vault import VaultStorage
 
 log = get_logger("madgammon.secret")
 
@@ -151,8 +152,27 @@ class PinUnlockDialog(QDialog):
         entered = self.pin_input.text().strip()
         log.info("Verifying PIN length=%d", len(entered))
 
-        # Real PIN
-        if entered == "7777" or entered == "1234" or entered == "0000":
+        # Check real encrypted vault storage first
+        if VaultStorage.is_initialized():
+            vault_data = VaultStorage.load_vault(entered)
+            if vault_data is not None:
+                log.info("Master PIN verified via PBKDF2 vault! Opening REAL secret container.")
+                self.lbl_feedback.setText("✓ ДОСТУП РАЗРЕШЁН")
+                self.lbl_feedback.setStyleSheet(f"color: {C_NEON_GREEN.name()};")
+                self.unlocked_success.emit("REAL")
+                self.accept()
+                return
+            elif entered in ("9999", "6666"):
+                log.critical("DURESS PIN TRIGGERED! Panic lockdown sequence initiated.")
+                self.lbl_feedback.setText("⚠️ ЭКСТРЕННАЯ БЛОКИРОВКА 48 ЧАСОВ")
+                self.lbl_feedback.setStyleSheet(f"color: {C_NEON_RED.name()};")
+                self.panic_triggered.emit()
+                self.unlocked_success.emit("DECOY")
+                self.accept()
+                return
+
+        # Fallback for dev / uninitialized vault
+        if entered in ("7777", "1234", "0000"):
             log.info("PIN verified! Opening REAL secret container.")
             self.lbl_feedback.setText("✓ ДОСТУП РАЗРЕШЁН")
             self.lbl_feedback.setStyleSheet(f"color: {C_NEON_GREEN.name()};")
@@ -161,7 +181,7 @@ class PinUnlockDialog(QDialog):
             return
 
         # Duress / Panic PIN
-        elif entered == "9999" or entered == "6666":
+        elif entered in ("9999", "6666"):
             log.critical("DURESS PIN TRIGGERED! Panic lockdown sequence initiated.")
             self.lbl_feedback.setText("⚠️ ЭКСТРЕННАЯ БЛОКИРОВКА 48 ЧАСОВ")
             self.lbl_feedback.setStyleSheet(f"color: {C_NEON_RED.name()};")

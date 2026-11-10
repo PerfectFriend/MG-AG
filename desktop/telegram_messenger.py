@@ -10,20 +10,33 @@ import sys
 import time
 import hashlib
 import random
+import base64
+import urllib.parse
+import secrets
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
-    QFrame, QSplitter, QComboBox, QMessageBox, QScrollArea, QFileDialog
+    QFrame, QSplitter, QComboBox, QMessageBox, QScrollArea, QFileDialog,
+    QDialog, QApplication
 )
 from PyQt6.QtGui import (
     QFont, QColor, QPen, QBrush, QIcon, QPainter, QRadialGradient,
     QLinearGradient, QPixmap, QPainterPath
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QSize
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF, QPointF, QSize, QObject
 
+from cryptography.hazmat.primitives.asymmetric import x25519
+
+from qr_code import QrRenderer
+from bridges_dialog import BridgesDialog, OFFICIAL_SMP_SERVERS
+from crypto_vault import (
+    DoubleRatchetSession, EncryptedRatchetMessage, VaultStorage,
+    IdentityManager, Bip39Vault, unpad_from_16kb
+)
+from transport_mesh import SimpleXSmpClient
 from logger import get_logger
 
 log = get_logger("madgammon.telegram_messenger")
@@ -66,10 +79,236 @@ class ChatContact:
     unread_count: int = 0
     is_channel: bool = False
     messages: List[ChatMessage] = field(default_factory=list)
+    queue_id: Optional[str] = None
+    peer_dh_pub: Optional[bytes] = None
+    ratchet: Optional[DoubleRatchetSession] = None
+
+
+class SmpQtBridge(QObject):
+    """Thread-safe bridge to deliver network frames to PyQt event loop."""
+    message_received = pyqtSignal(str, str)
+    status_updated = pyqtSignal(str)
+
+
+class MyInviteQrDialog(QDialog):
+    """
+    Sovereign SimpleX Invite QR Dialog.
+    Displays peer invite link with embedded X25519 DH public key
+    and in-memory QR code rendered with QrRenderer (pure Python Reed-Solomon GF(256)).
+    """
+    def __init__(self, server: str, queue_id: str, dh_pub_b64: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔗 Мой SimpleX QR Инвайт // Sovereign E2EE")
+        self.resize(460, 560)
+        self.setStyleSheet("background: #0d131d; color: #e6edf8;")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("🔗 Ваш SimpleX E2EE Инвайт")
+        title.setFont(QFont("sans-serif", 14, QFont.Weight.Bold))
+        title.setStyleSheet("color: #00e5ff;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        desc = QLabel(
+            "Покажите этот QR-код собеседнику или скопируйте ссылку для подключения.\n"
+            "Канал защищён двойным храповиком Double Ratchet и постоянным паддингом 16KB."
+        )
+        desc.setWordWrap(True)
+        desc.setFont(QFont("sans-serif", 9))
+        desc.setStyleSheet("color: #8899aa;")
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc)
+
+        # Build invite URL matching Android SimpleX format
+        self.invite_url = f"simplex://invite?server={server}&queue={queue_id}&dh={dh_pub_b64}"
+
+        # QR Code Display
+        qr_frame = QFrame()
+        qr_frame.setStyleSheet("background: #ffffff; border: 2px solid #00e5ff; border-radius: 12px; padding: 10px;")
+        qrf_layout = QVBoxLayout(qr_frame)
+        qrf_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        lbl_qr = QLabel()
+        pixmap = QrRenderer.render_pixmap(self.invite_url, size=240, border_modules=2)
+        lbl_qr.setPixmap(pixmap)
+        lbl_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        qrf_layout.addWidget(lbl_qr)
+        layout.addWidget(qr_frame, 0, Qt.AlignmentFlag.AlignCenter)
+
+        # Server and Queue info
+        info_lbl = QLabel(f"<b>Релей:</b> {server} | <b>Очередь:</b> {queue_id[:16]}...")
+        info_lbl.setFont(QFont("Monospace", 8))
+        info_lbl.setStyleSheet("color: #00ffaa;")
+        info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(info_lbl)
+
+        # URL Text box
+        txt_url = QLineEdit(self.invite_url)
+        txt_url.setReadOnly(True)
+        txt_url.setStyleSheet("""
+            QLineEdit {
+                background: #151e2b; color: #88bbdd; border: 1px solid #223348;
+                border-radius: 6px; padding: 8px; font-family: Monospace; font-size: 9px;
+            }
+        """)
+        layout.addWidget(txt_url)
+
+        # Buttons
+        btn_box = QHBoxLayout()
+        btn_copy = QPushButton("📋 Скопировать ссылку")
+        btn_copy.setStyleSheet("""
+            QPushButton {
+                background: #004455; color: #00e5ff; border: 1.5px solid #00e5ff;
+                border-radius: 6px; padding: 10px 16px; font-weight: bold;
+            }
+            QPushButton:hover { background: #006677; color: #ffffff; }
+        """)
+        btn_copy.clicked.connect(self._copy_link)
+        btn_box.addWidget(btn_copy)
+
+        btn_close = QPushButton("Закрыть")
+        btn_close.setStyleSheet("""
+            QPushButton {
+                background: #1c2636; color: #ffffff; border: 1px solid #334455;
+                border-radius: 6px; padding: 10px 16px;
+            }
+            QPushButton:hover { background: #28384e; }
+        """)
+        btn_close.clicked.connect(self.accept)
+        btn_box.addWidget(btn_close)
+
+        layout.addLayout(btn_box)
+
+    def _copy_link(self):
+        cb = QApplication.clipboard()
+        if cb:
+            cb.setText(self.invite_url)
+            QMessageBox.information(self, "Скопировано", "Ссылка-инвайт скопирована в буфер обмена!")
+
+
+class ConnectByInviteDialog(QDialog):
+    """
+    Connect to SimpleX Peer by Invite URL.
+    Parses relay server, queue ID, and peer X25519 DH public key.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("➕ Подключение к собеседнику SimpleX")
+        self.resize(500, 360)
+        self.setStyleSheet("background: #0d131d; color: #e6edf8;")
+
+        self.parsed_server = ""
+        self.parsed_queue = ""
+        self.parsed_peer_dh = b""
+        self.contact_name = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("➕ Подключение через SimpleX инвайт")
+        title.setFont(QFont("sans-serif", 14, QFont.Weight.Bold))
+        title.setStyleSheet("color: #00e5ff;")
+        layout.addWidget(title)
+
+        desc = QLabel(
+            "Вставьте ссылку-инвайт, полученную от собеседника.\n"
+            "Формат: simplex://invite?server=...&queue=...&dh=..."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #8899aa; font-size: 11px;")
+        layout.addWidget(desc)
+
+        layout.addWidget(QLabel("Имя собеседника:"))
+        self.name_edit = QLineEdit("SimpleX Peer")
+        self.name_edit.setStyleSheet("""
+            QLineEdit {
+                background: #151e2b; color: #ffffff; border: 1px solid #223348;
+                border-radius: 6px; padding: 8px 12px; font-size: 12px;
+            }
+        """)
+        layout.addWidget(self.name_edit)
+
+        layout.addWidget(QLabel("Ссылка-инвайт:"))
+        self.link_edit = QLineEdit()
+        self.link_edit.setPlaceholderText("simplex://invite?server=smp10.simplex.im&queue=...&dh=...")
+        self.link_edit.setStyleSheet("""
+            QLineEdit {
+                background: #151e2b; color: #00e5ff; border: 1px solid #223348;
+                border-radius: 6px; padding: 8px 12px; font-family: Monospace; font-size: 10px;
+            }
+            QLineEdit:focus { border: 1px solid #00e5ff; }
+        """)
+        layout.addWidget(self.link_edit)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setFont(QFont("Monospace", 9))
+        self.status_lbl.setStyleSheet("color: #ff5577;")
+        layout.addWidget(self.status_lbl)
+
+        layout.addStretch()
+
+        btn_box = QHBoxLayout()
+        btn_connect = QPushButton("⚡ Установить E2EE соединение")
+        btn_connect.setStyleSheet("""
+            QPushButton {
+                background: #005544; color: #00ffaa; border: 1.5px solid #00ffaa;
+                border-radius: 6px; padding: 10px 16px; font-weight: bold; font-size: 11px;
+            }
+            QPushButton:hover { background: #007755; color: #ffffff; }
+        """)
+        btn_connect.clicked.connect(self._validate_and_connect)
+        btn_box.addWidget(btn_connect)
+
+        btn_cancel = QPushButton("Отмена")
+        btn_cancel.setStyleSheet("""
+            QPushButton {
+                background: #1c2636; color: #ffffff; border: 1px solid #334455;
+                border-radius: 6px; padding: 10px 16px;
+            }
+            QPushButton:hover { background: #28384e; }
+        """)
+        btn_cancel.clicked.connect(self.reject)
+        btn_box.addWidget(btn_cancel)
+
+        layout.addLayout(btn_box)
+
+    def _validate_and_connect(self):
+        raw_link = self.link_edit.text().strip()
+        if not raw_link:
+            self.status_lbl.setText("Ошибка: введите ссылку-инвайт")
+            return
+
+        try:
+            parsed = urllib.parse.urlparse(raw_link)
+            query = urllib.parse.parse_qs(parsed.query)
+            server = query.get("server", ["smp10.simplex.im"])[0]
+            queue = query.get("queue", [""])[0]
+            dh_b64 = query.get("dh", [""])[0]
+
+            if not queue:
+                self.status_lbl.setText("Ошибка: отсутствует параметр queue в ссылке")
+                return
+
+            peer_dh = base64.b64decode(dh_b64) if dh_b64 else b""
+
+            self.parsed_server = server
+            self.parsed_queue = queue
+            self.parsed_peer_dh = peer_dh
+            self.contact_name = self.name_edit.text().strip() or "SimpleX Peer"
+            self.accept()
+        except Exception as e:
+            self.status_lbl.setText(f"Ошибка разбора инвайта: {e}")
+
 
 class CyberTelegramMessenger(QMainWindow):
     """
     Full Telegram Desktop UI Clone with Sovereign Cyberpunk Art Theme.
+    Includes active SimpleX SMP Relay transport, QR Code invites,
+    and end-to-end Signal Double Ratchet with 16KB constant-size padding.
     """
     closed_to_game = pyqtSignal()
 
@@ -84,12 +323,39 @@ class CyberTelegramMessenger(QMainWindow):
         self.chat_bg_pixmap: Optional[QPixmap] = None
         self._load_background_wallpaper()
 
-        # Initialize mock contacts and chats
+        # Initialize Identity and SimpleX transport
+        self.identity = None
+        self._init_identity()
+
+        # SimpleX SMP Relay Client
+        self.smp_bridge = SmpQtBridge()
+        self.smp_bridge.message_received.connect(self._on_smp_message_received)
+        self.smp_bridge.status_updated.connect(self._on_smp_status_updated)
+        self.smp_client = SimpleXSmpClient(
+            on_message=self.smp_bridge.message_received.emit,
+            on_status=self.smp_bridge.status_updated.emit
+        )
+        self.my_queue_id = f"mg_q_{secrets.token_hex(8)}"
+        self.smp_client.connect_relay()
+
+        # Initialize contacts
         self._init_contacts_data()
         self.current_contact: ChatContact = self.contacts[0]
 
         self._build_ui()
-        log.info("CyberTelegramMessenger initialized successfully in %s mode", mode)
+        log.info("CyberTelegramMessenger initialized successfully in %s mode (queue: %s)", mode, self.my_queue_id)
+
+    def _init_identity(self):
+        try:
+            words = Bip39Vault.generate_mnemonic(12)
+            self.identity = IdentityManager.derive_identity(words)
+        except Exception as e:
+            log.warning("Could not derive identity from vault: %s", e)
+            words = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+            self.identity = IdentityManager.derive_identity(words)
+
+        self.my_dh_pub = bytes.fromhex(self.identity["x25519_pub_hex"])
+        self.my_dh_pub_b64 = base64.b64encode(self.my_dh_pub).decode("ascii")
 
     def _load_background_wallpaper(self):
         assets_dir = os.path.join(os.path.dirname(__file__), "assets")
@@ -272,6 +538,48 @@ class CyberTelegramMessenger(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
+        # Top Sovereign Action Toolbar
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(6)
+
+        btn_my_qr = QPushButton("🔗 QR")
+        btn_my_qr.setToolTip("Показать мой SimpleX QR-код инвайт")
+        btn_my_qr.setStyleSheet("""
+            QPushButton {
+                background: #003344; color: #00e5ff; border: 1px solid #00aacc;
+                border-radius: 4px; padding: 5px; font-weight: bold; font-size: 10px;
+            }
+            QPushButton:hover { background: #005566; color: #ffffff; }
+        """)
+        btn_my_qr.clicked.connect(self._open_my_qr_dialog)
+        actions_row.addWidget(btn_my_qr)
+
+        btn_connect = QPushButton("➕ Инвайт")
+        btn_connect.setToolTip("Подключиться к собеседнику по инвайт-ссылке")
+        btn_connect.setStyleSheet("""
+            QPushButton {
+                background: #003a28; color: #00ffaa; border: 1px solid #00cc88;
+                border-radius: 4px; padding: 5px; font-weight: bold; font-size: 10px;
+            }
+            QPushButton:hover { background: #00553a; color: #ffffff; }
+        """)
+        btn_connect.clicked.connect(self._open_connect_dialog)
+        actions_row.addWidget(btn_connect)
+
+        btn_bridges = QPushButton("🌐 Мосты")
+        btn_bridges.setToolTip("Мосты, Прокси (Tor/V2Ray) и Серверы SMP")
+        btn_bridges.setStyleSheet("""
+            QPushButton {
+                background: #2a2010; color: #ffb92d; border: 1px solid #cc9424;
+                border-radius: 4px; padding: 5px; font-weight: bold; font-size: 10px;
+            }
+            QPushButton:hover { background: #3d2e17; color: #ffffff; }
+        """)
+        btn_bridges.clicked.connect(self._open_bridges_dialog)
+        actions_row.addWidget(btn_bridges)
+
+        layout.addLayout(actions_row)
+
         # Search Bar
         search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
@@ -306,8 +614,176 @@ class CyberTelegramMessenger(QMainWindow):
         self.dialogs_list.itemClicked.connect(self._on_contact_selected)
         layout.addWidget(self.dialogs_list, 1)
 
+        # SMP Status Badge
+        self.lbl_smp_badge = QLabel("🟢 SimpleX SMP: подключение...")
+        self.lbl_smp_badge.setFont(QFont("Monospace", 8))
+        self.lbl_smp_badge.setStyleSheet("color: #708098; padding: 4px;")
+        layout.addWidget(self.lbl_smp_badge)
+
         self._populate_dialogs_list()
         return panel
+
+    def _open_my_qr_dialog(self):
+        self.smp_client.subscribe_queue(self.my_queue_id)
+        dlg = MyInviteQrDialog(
+            server=self.smp_client.active_server,
+            queue_id=self.my_queue_id,
+            dh_pub_b64=self.my_dh_pub_b64,
+            parent=self
+        )
+        dlg.exec()
+
+    def _open_connect_dialog(self):
+        dlg = ConnectByInviteDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            peer_name = dlg.contact_name
+            server = dlg.parsed_server
+            queue_id = dlg.parsed_queue
+            peer_dh = dlg.parsed_peer_dh
+
+            # Create Double Ratchet session matching Android GameViewModel
+            root_seed = hashlib.sha256(f"simplex_room_root:ROOM_{queue_id}".encode("utf-8")).digest()
+            my_dh_priv = x25519.X25519PrivateKey.from_private_bytes(bytes.fromhex(self.identity["x25519_priv_hex"]))
+
+            ratchet = DoubleRatchetSession(
+                root_key=root_seed,
+                my_dh_priv=my_dh_priv,
+                peer_dh_pub_bytes=peer_dh if len(peer_dh) == 32 else None,
+                is_initiator=True
+            )
+
+            # Subscribe to peer queue on SMP
+            self.smp_client.subscribe_queue(queue_id)
+
+            # Send initial HELLO handshake with our DH key
+            self.smp_client.send_message(queue_id, f"HELLO:{self.my_dh_pub_b64}")
+
+            # Create new contact
+            new_contact = ChatContact(
+                id=queue_id,
+                name=f"{peer_name} (SimpleX)",
+                handle=f"@simplex_{queue_id[:8]}",
+                avatar_color=QColor(0, 255, 128),
+                status=f"online • {server}",
+                last_msg="[E2EE Double Ratchet Handshake sent]",
+                last_time=time.strftime("%H:%M"),
+                unread_count=0,
+                messages=[
+                    ChatMessage(
+                        id=str(int(time.time() * 1000)),
+                        sender="System",
+                        text=f"🤝 SimpleX SMP сессия установлена с очередью {queue_id}. Отправлен DH handshake.",
+                        timestamp=time.strftime("%H:%M"),
+                        is_outgoing=False
+                    )
+                ],
+                queue_id=queue_id,
+                peer_dh_pub=peer_dh,
+                ratchet=ratchet
+            )
+            self.contacts.insert(0, new_contact)
+            self.current_contact = new_contact
+            self._populate_dialogs_list()
+            self._update_chat_header()
+            self._render_chat_messages()
+            self._update_info_panel()
+
+    def _open_bridges_dialog(self):
+        dlg = BridgesDialog(self)
+        dlg.exec()
+
+    def _on_smp_status_updated(self, status: str):
+        if hasattr(self, "lbl_smp_badge"):
+            short = status if len(status) < 40 else status[:37] + "..."
+            self.lbl_smp_badge.setText(short)
+            if "🟢" in status or "Подключено" in status:
+                self.lbl_smp_badge.setStyleSheet("color: #00ffaa; padding: 4px;")
+            elif "🔴" in status or "Ошибка" in status:
+                self.lbl_smp_badge.setStyleSheet("color: #ff5577; padding: 4px;")
+            else:
+                self.lbl_smp_badge.setStyleSheet("color: #ffb92d; padding: 4px;")
+
+    def _on_smp_message_received(self, queue_id: str, payload: str):
+        log.info("Received SMP message on queue %s: %s...", queue_id, payload[:50])
+
+        contact = next((c for c in self.contacts if c.queue_id == queue_id), None)
+        if not contact:
+            root_seed = hashlib.sha256(f"simplex_room_root:ROOM_{queue_id}".encode("utf-8")).digest()
+            my_dh_priv = x25519.X25519PrivateKey.from_private_bytes(bytes.fromhex(self.identity["x25519_priv_hex"]))
+            ratchet = DoubleRatchetSession(
+                root_key=root_seed,
+                my_dh_priv=my_dh_priv,
+                is_initiator=False
+            )
+            contact = ChatContact(
+                id=queue_id,
+                name=f"Peer ({queue_id[:8]})",
+                handle=f"@simplex_{queue_id[:8]}",
+                avatar_color=QColor(0, 229, 255),
+                status="online • SimpleX SMP",
+                last_msg="Входящее подключение",
+                last_time=time.strftime("%H:%M"),
+                unread_count=0,
+                messages=[],
+                queue_id=queue_id,
+                ratchet=ratchet
+            )
+            self.contacts.insert(0, contact)
+            self._populate_dialogs_list()
+
+        t_now = time.strftime("%H:%M")
+
+        if payload.startswith("HELLO:"):
+            peer_key_b64 = payload[6:].strip()
+            try:
+                raw_key = base64.b64decode(peer_key_b64)
+                if len(raw_key) == 32:
+                    contact.peer_dh_pub = raw_key
+                    if contact.ratchet:
+                        contact.ratchet.set_peer_dh_pub(raw_key)
+                    sys_msg = ChatMessage(
+                        id=str(int(time.time() * 1000)),
+                        sender="System",
+                        text="🤝 DH Handshake подтверждён собеседником. E2EE канал полностью активен.",
+                        timestamp=t_now,
+                        is_outgoing=False
+                    )
+                    contact.messages.append(sys_msg)
+                    contact.last_msg = "DH Handshake confirmed"
+                    contact.last_time = t_now
+                    if self.current_contact.id == contact.id:
+                        self._render_chat_messages()
+                    self._populate_dialogs_list()
+            except Exception as e:
+                log.warning("Failed to decode HELLO DH key: %s", e)
+
+        elif payload.startswith("DR:"):
+            b64_wire = payload[3:].strip()
+            try:
+                wire_bytes = base64.b64decode(b64_wire)
+                enc_msg = EncryptedRatchetMessage.deserialize(wire_bytes)
+                if contact.ratchet:
+                    pt_bytes = contact.ratchet.decrypt_message(enc_msg)
+                    text = pt_bytes.decode("utf-8")
+
+                    inc_msg = ChatMessage(
+                        id=str(int(time.time() * 1000)),
+                        sender=contact.name.split()[0],
+                        text=text,
+                        timestamp=t_now,
+                        is_outgoing=False
+                    )
+                    contact.messages.append(inc_msg)
+                    contact.last_msg = text
+                    contact.last_time = t_now
+                    if self.current_contact.id == contact.id:
+                        self._render_chat_messages()
+                    else:
+                        contact.unread_count += 1
+                    self._populate_dialogs_list()
+                    log.info("Decrypted Double Ratchet message (%d chars) from %s", len(text), queue_id)
+            except Exception as e:
+                log.error("Failed to decrypt incoming Double Ratchet message: %s", e)
 
     def _populate_dialogs_list(self, filter_text: str = ""):
         self.dialogs_list.clear()
@@ -318,13 +794,11 @@ class CyberTelegramMessenger(QMainWindow):
             item.setSizeHint(QSize(250, 62))
             item.setData(Qt.ItemDataRole.UserRole, c)
 
-            # Custom widget for TG dialog item
             w = QWidget()
             wl = QHBoxLayout(w)
             wl.setContentsMargins(6, 4, 6, 4)
             wl.setSpacing(10)
 
-            # Avatar circle
             avatar = QLabel(c.name[0])
             avatar.setFixedSize(42, 42)
             avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -335,7 +809,6 @@ class CyberTelegramMessenger(QMainWindow):
             """)
             wl.addWidget(avatar)
 
-            # Text block
             txt_box = QVBoxLayout()
             txt_box.setSpacing(2)
             txt_box.setContentsMargins(0, 2, 0, 2)
@@ -521,7 +994,6 @@ class CyberTelegramMessenger(QMainWindow):
         self.lbl_chat_status.setText(c.status)
 
     def _render_chat_messages(self):
-        # Clear existing message widgets (except stretch)
         while self.messages_layout.count() > 1:
             item = self.messages_layout.takeAt(0)
             if item.widget():
@@ -531,7 +1003,6 @@ class CyberTelegramMessenger(QMainWindow):
             bubble = self._create_message_bubble(msg)
             self.messages_layout.insertWidget(self.messages_layout.count() - 1, bubble)
 
-        # Scroll to bottom
         QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(
             self.scroll_area.verticalScrollBar().maximum()
         ))
@@ -620,8 +1091,19 @@ class CyberTelegramMessenger(QMainWindow):
         self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum())
         self._populate_dialogs_list(self.search_input.text().strip())
 
-        # Peer auto-response simulation (SimpleX SMP echo)
-        if not self.current_contact.is_channel:
+        # Check if live SimpleX SMP contact
+        if self.current_contact.queue_id and self.current_contact.ratchet:
+            try:
+                enc = self.current_contact.ratchet.encrypt_message(text.encode("utf-8"))
+                wire_bytes = enc.serialize()
+                b64_wire = base64.b64encode(wire_bytes).decode("ascii")
+                payload = f"DR:{b64_wire}"
+                self.smp_client.send_message(self.current_contact.queue_id, payload)
+                log.info("Sent Double Ratchet frame (%d bytes) to queue %s", len(wire_bytes), self.current_contact.queue_id)
+            except Exception as e:
+                log.error("Failed to encrypt/send Double Ratchet message: %s", e)
+        elif not self.current_contact.is_channel:
+            # Fall back to simulation echo for mock contacts (Alice etc.)
             peer_name = self.current_contact.name.split()[0]
             QTimer.singleShot(1400, lambda: self._receive_peer_reply(peer_name))
 
@@ -699,7 +1181,8 @@ class CyberTelegramMessenger(QMainWindow):
         lbl_sas.setFont(QFont("sans-serif", 11))
         vb_layout.addWidget(lbl_sas)
 
-        lbl_fingerprint = QLabel("SHA-256 Key: 8f2a...91bc (Verified)")
+        fp_display = self.identity.get("fingerprint", "8f2a...91bc") if self.identity else "8f2a...91bc"
+        lbl_fingerprint = QLabel(f"Fingerprint: {fp_display}")
         lbl_fingerprint.setFont(QFont("Monospace", 8))
         lbl_fingerprint.setStyleSheet("color: #8899aa;")
         vb_layout.addWidget(lbl_fingerprint)
