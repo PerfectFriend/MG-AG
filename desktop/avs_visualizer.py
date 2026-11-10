@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QSlider, QListWidget, QListWidgetItem, QCheckBox,
     QGroupBox, QFormLayout, QFileDialog, QMessageBox, QSplitter,
-    QFrame, QApplication
+    QFrame, QApplication, QLineEdit
 )
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QFont, QRadialGradient,
@@ -678,18 +678,23 @@ class AVSPreset:
             name=data.get("name", "Custom Preset"),
             description=data.get("description", "")
         )
-        registry = {
-            "SpectrumBarsComponent": SpectrumBarsComponent,
-            "OscilloscopeComponent": OscilloscopeComponent,
-            "SuperScopeComponent": SuperScopeComponent,
-            "StarfieldWarpComponent": StarfieldWarpComponent,
-            "SynthwaveHorizonComponent": SynthwaveHorizonComponent,
-            "CyberTunnelComponent": CyberTunnelComponent,
-            "ParticleBurstComponent": ParticleBurstComponent,
-            "MotionBlurComponent": MotionBlurComponent,
-            "ColorCycleComponent": ColorCycleComponent,
-            "KaleidoscopeComponent": KaleidoscopeComponent,
-        }
+        try:
+            from avs_presets_pack import EXTENDED_COMPONENT_REGISTRY
+            registry = EXTENDED_COMPONENT_REGISTRY
+        except Exception:
+            registry = {
+                "SpectrumBarsComponent": SpectrumBarsComponent,
+                "OscilloscopeComponent": OscilloscopeComponent,
+                "SuperScopeComponent": SuperScopeComponent,
+                "StarfieldWarpComponent": StarfieldWarpComponent,
+                "SynthwaveHorizonComponent": SynthwaveHorizonComponent,
+                "CyberTunnelComponent": CyberTunnelComponent,
+                "ParticleBurstComponent": ParticleBurstComponent,
+                "MotionBlurComponent": MotionBlurComponent,
+                "ColorCycleComponent": ColorCycleComponent,
+                "KaleidoscopeComponent": KaleidoscopeComponent,
+            }
+
         for comp_data in data.get("components", []):
             c_type = comp_data.get("type")
             if c_type in registry:
@@ -700,71 +705,23 @@ class AVSPreset:
 
 
 def get_default_presets() -> List[AVSPreset]:
-    """Generates the built-in catalogue of Winamp AVS presets."""
-    p1 = AVSPreset(
-        name="⚡ Cyber Neon Classic",
-        description="Классический неоновый спектр Winamp 1998 + фосфорный осциллограф + 3D звёзды",
-        components=[
-            StarfieldWarpComponent(),
-            SpectrumBarsComponent(),
-            OscilloscopeComponent(),
-        ]
-    )
-
-    p2 = AVSPreset(
-        name="🌅 Outrun Synthwave 1984",
-        description="Ретровейв горизонт, неоновое солнце и спектральные горы",
-        components=[
-            SynthwaveHorizonComponent(),
-            SpectrumBarsComponent(),
-            ParticleBurstComponent(),
-        ]
-    )
-    p2.components[1].params["style"] = "FIRE"
-
-    p3 = AVSPreset(
-        name="🌌 Deep Space Warp",
-        description="3D гиперпрыжок в космосе + математический спиральный вихрь SuperScope",
-        components=[
-            StarfieldWarpComponent(),
-            SuperScopeComponent(),
-            ParticleBurstComponent(),
-        ]
-    )
-    p3.components[1].params["formula"] = "VORTEX"
-
-    p4 = AVSPreset(
-        name="📟 Acid Phosphor Oscilloscope",
-        description="Винтажный зелёный осциллограф с фигурами Лиссажу и спектральными столбиками",
-        components=[
-            OscilloscopeComponent(),
-            SpectrumBarsComponent(),
-        ]
-    )
-    p4.components[0].params["mode"] = "LISSAJOUS"
-    p4.components[1].params["style"] = "MATRIX"
-
-    p5 = AVSPreset(
-        name="🌀 Hexagonal Cyber Vortex",
-        description="3D туннель сквозь киберпространство + салют из частиц на басах",
-        components=[
-            CyberTunnelComponent(),
-            ParticleBurstComponent(),
-            SpectrumBarsComponent(),
-        ]
-    )
-
-    p6 = AVSPreset(
-        name="🧬 SuperScope DNA Helix",
-        description="Вращающаяся двойная спираль ДНК, реагирующая на средние и высокие частоты",
-        components=[
-            StarfieldWarpComponent(),
-            SuperScopeComponent(),
-        ]
-    )
-    p6.components[1].params["formula"] = "HELIX"
-
-    return [p1, p2, p3, p4, p5, p6]
+    """Generates the built-in 100-preset superpack of Winamp AVS presets."""
+    try:
+        from avs_presets_pack import get_100_avs_presets
+        return get_100_avs_presets()
+    except Exception as e:
+        log.warning("Failed to load 100 presets pack: %s, falling back to basic 6", e)
+        p1 = AVSPreset(
+            name="⚡ Cyber Neon Classic",
+            description="Классический неоновый спектр Winamp 1998 + фосфорный осциллограф + 3D звёзды",
+            components=[StarfieldWarpComponent(), SpectrumBarsComponent(), OscilloscopeComponent()]
+        )
+        p2 = AVSPreset(
+            name="🌅 Outrun Synthwave 1984",
+            description="Ретровейв горизонт, неоновое солнце и спектральные горы",
+            components=[SynthwaveHorizonComponent(), SpectrumBarsComponent(), ParticleBurstComponent()]
+        )
+        return [p1, p2]
 
 
 # ─── 6. AVS CANVAS & SCREENSAVER WIDGET ───
@@ -943,7 +900,8 @@ class AVSCanvasWidget(QWidget):
 
         painter.setFont(QFont("Monospace", 9, QFont.Weight.Bold))
         painter.setPen(QColor(0, 229, 255))
-        preset_txt = f"AVS: {self.current_preset.name} [{self.current_preset_idx + 1}/{len(self.presets)}]"
+        auto_lbl = " [AUTO 25s]" if self.auto_cycle_presets else " [MANUAL]"
+        preset_txt = f"AVS: {self.current_preset.name} [{self.current_preset_idx + 1}/{len(self.presets)}]{auto_lbl}"
         painter.drawText(20, 31, preset_txt)
 
         # Station Title center
@@ -955,9 +913,29 @@ class AVSCanvasWidget(QWidget):
 
         # Right FPS & Mode indicator
         painter.setPen(QColor(0, 255, 136))
-        fps_txt = f"{self.fps} FPS" + (" [FULLSCREEN]" if self.is_fullscreen_screensaver else " [F11: Fullscreen]")
+        fps_txt = f"{self.fps} FPS" + (" [F11: Fullscreen | [ ] : Switch | R: Random]" if not self.is_fullscreen_screensaver else " [F11: Exit | [ ] : Switch | R: Random]")
         r_w = fm.horizontalAdvance(fps_txt)
         painter.drawText(w - r_w - 20, 31, fps_txt)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key.Key_BracketLeft, Qt.Key.Key_PageUp):
+            self.prev_preset()
+        elif key in (Qt.Key.Key_BracketRight, Qt.Key.Key_PageDown):
+            self.next_preset()
+        elif key in (Qt.Key.Key_R, Qt.Key.Key_N):
+            import random
+            rnd_idx = random.randint(0, len(self.presets) - 1)
+            self.set_preset_by_index(rnd_idx)
+        elif key == Qt.Key.Key_A:
+            self.auto_cycle_presets = not self.auto_cycle_presets
+            self.update()
+        elif key == Qt.Key.Key_F11:
+            self.toggle_fullscreen_screensaver()
+        elif key == Qt.Key.Key_Escape and self.is_fullscreen_screensaver:
+            self.toggle_fullscreen_screensaver()
+        else:
+            super().keyPressEvent(event)
 
     def _load_saved_presets(self):
         p_path = os.path.expanduser("~/.madgammon/avs_presets.json")
@@ -1023,12 +1001,17 @@ class AVSPresetEditorDialog(QDialog):
 
         # Preset Selector Bar
         top_bar = QHBoxLayout()
-        top_bar.addWidget(QLabel("<b>Активный пресет:</b>"))
+        top_bar.addWidget(QLabel("<b>Пресет:</b>"))
 
         self.cb_presets = QComboBox()
+        self.cb_presets.setMinimumWidth(320)
         self._populate_presets_combo()
         self.cb_presets.currentIndexChanged.connect(self._on_preset_changed)
         top_bar.addWidget(self.cb_presets, 1)
+
+        btn_rand = QPushButton("🎲 Случайный (R)")
+        btn_rand.clicked.connect(self._select_random_preset)
+        top_bar.addWidget(btn_rand)
 
         btn_new = QPushButton("➕ Новый")
         btn_new.clicked.connect(self._create_new_preset)
@@ -1044,6 +1027,30 @@ class AVSPresetEditorDialog(QDialog):
         top_bar.addWidget(btn_fs)
 
         layout.addLayout(top_bar)
+
+        # Category Filter & Search Bar
+        filter_bar = QHBoxLayout()
+        filter_bar.addWidget(QLabel("Категория:"))
+        self.combo_cat = QComboBox()
+        self.combo_cat.addItems([
+            "🌐 Все коллекции (100 пресетов)",
+            "⚡ Classic Nullsoft 1998-2002 (1-15)",
+            "🏆 VISBOT & Demoscene (16-30)",
+            "🌆 Cyberpunk & Synthwave (31-45)",
+            "📟 Lab & VU Meters (46-60)",
+            "🌀 Sacred Geometry (61-75)",
+            "🚀 Deep Space & Warp (76-90)",
+            "🧬 Quantum & DNA (91-100)"
+        ])
+        self.combo_cat.currentIndexChanged.connect(self._on_category_filter_changed)
+        filter_bar.addWidget(self.combo_cat, 1)
+
+        self.search_preset = QLineEdit()
+        self.search_preset.setPlaceholderText("🔍 Поиск пресета...")
+        self.search_preset.textChanged.connect(self._filter_presets_search)
+        filter_bar.addWidget(self.search_preset, 1)
+
+        layout.addLayout(filter_bar)
 
         # Main Splitter: Component Pipeline List (Left) | Property Tweaker (Right)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1115,14 +1122,58 @@ class AVSPresetEditorDialog(QDialog):
         self._load_current_preset_pipeline()
 
     def _populate_presets_combo(self):
+        self.cb_presets.blockSignals(True)
         self.cb_presets.clear()
-        for p in self.viz.presets:
-            self.cb_presets.addItem(p.name)
+        for idx, p in enumerate(self.viz.presets):
+            self.cb_presets.addItem(p.name, idx)
         self.cb_presets.setCurrentIndex(self.viz.current_preset_idx)
+        self.cb_presets.blockSignals(False)
 
-    def _on_preset_changed(self, idx: int):
-        if idx >= 0:
-            self.viz.set_preset_by_index(idx)
+    def _on_category_filter_changed(self, cat_idx: int):
+        self.search_preset.clear()
+        ranges = [
+            (0, 100),   # All
+            (0, 15),    # Classic
+            (15, 30),   # Demoscene
+            (30, 45),   # Cyberpunk
+            (45, 60),   # Lab & VU
+            (60, 75),   # Sacred
+            (75, 90),   # Space
+            (90, 100),  # Quantum
+        ]
+        start, end = ranges[cat_idx] if cat_idx < len(ranges) else (0, len(self.viz.presets))
+        self.cb_presets.blockSignals(True)
+        self.cb_presets.clear()
+        for idx in range(start, min(end, len(self.viz.presets))):
+            self.cb_presets.addItem(self.viz.presets[idx].name, idx)
+        if self.cb_presets.count() > 0:
+            self.cb_presets.setCurrentIndex(0)
+            self._on_preset_changed(0)
+        self.cb_presets.blockSignals(False)
+
+    def _filter_presets_search(self, text: str):
+        query = text.strip().lower()
+        self.cb_presets.blockSignals(True)
+        self.cb_presets.clear()
+        for idx, p in enumerate(self.viz.presets):
+            if not query or query in p.name.lower() or query in p.description.lower():
+                self.cb_presets.addItem(p.name, idx)
+        if self.cb_presets.count() > 0:
+            self.cb_presets.setCurrentIndex(0)
+            self._on_preset_changed(0)
+        self.cb_presets.blockSignals(False)
+
+    def _select_random_preset(self):
+        import random
+        if self.viz.presets:
+            rnd_idx = random.randint(0, len(self.viz.presets) - 1)
+            self._populate_presets_combo()
+            self.cb_presets.setCurrentIndex(rnd_idx)
+
+    def _on_preset_changed(self, combo_idx: int):
+        real_idx = self.cb_presets.itemData(combo_idx)
+        if real_idx is not None and 0 <= real_idx < len(self.viz.presets):
+            self.viz.set_preset_by_index(real_idx)
             self._load_current_preset_pipeline()
 
     def _load_current_preset_pipeline(self):
@@ -1186,12 +1237,12 @@ class AVSPresetEditorDialog(QDialog):
         self._load_current_preset_pipeline()
 
     def _show_add_component_menu(self):
-        # Creates a dialog with available components to add
+        # Full palette of 17 classic and extended APE components
         components = [
             ("Спектральный анализатор (FFT Bars)", SpectrumBarsComponent),
             ("Осциллограф (Phosphor CRT)", OscilloscopeComponent),
             ("SuperScope (Математические кривые)", SuperScopeComponent),
-            ("3D Starfield Warp", StarfieldWarpComponent),
+            ("3D Starfield Warp (Звездное поле)", StarfieldWarpComponent),
             ("Неоновый Synthwave горизонт", SynthwaveHorizonComponent),
             ("Кибер-вихрь (3D Туннель)", CyberTunnelComponent),
             ("Частицы и Салют (Beat Sparks)", ParticleBurstComponent),
@@ -1199,16 +1250,35 @@ class AVSPresetEditorDialog(QDialog):
             ("Цветовой цикл (Rainbow Cycle)", ColorCycleComponent),
             ("Калейдоскоп (4-Way Mirror)", KaleidoscopeComponent),
         ]
+        try:
+            from avs_presets_pack import (
+                CircularSpectrumComponent, VUMeterNeedleComponent,
+                MatrixRainComponent, SpirographLaserComponent,
+                ShockwaveRingsComponent, WireframeMeshComponent,
+                WaveformRibbonComponent
+            )
+            components.extend([
+                ("Круговой полярный спектр (Circular FFT)", CircularSpectrumComponent),
+                ("Стрелочный VU Meter (Analogue Needle)", VUMeterNeedleComponent),
+                ("Матричный цифровой дождь (Matrix Rain)", MatrixRainComponent),
+                ("Лазерный спирограф (Laser Spirograph)", SpirographLaserComponent),
+                ("Ударные звуковые волны (Shockwave Rings)", ShockwaveRingsComponent),
+                ("3D Полигональный кристалл (Wireframe Mesh)", WireframeMeshComponent),
+                ("Парящая волновая лента (Waveform Ribbon)", WaveformRibbonComponent),
+            ])
+        except Exception:
+            pass
+
         dlg = QDialog(self)
         dlg.setWindowTitle("Добавить элемент в AVS конвейер")
-        dlg.resize(380, 320)
+        dlg.resize(420, 360)
         d_layout = QVBoxLayout(dlg)
         lw = QListWidget()
         for name, _ in components:
             lw.addItem(name)
         d_layout.addWidget(lw)
 
-        btn_add = QPushButton("Добавить")
+        btn_add = QPushButton("Добавить в конвейер")
         btn_add.clicked.connect(dlg.accept)
         d_layout.addWidget(btn_add)
 
