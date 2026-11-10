@@ -1589,6 +1589,10 @@ class MadGammonWindow(QMainWindow):
         self.secret_shortcut = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
         self.secret_shortcut.activated.connect(self._open_secret_pin_dialog)
 
+        # AVS Screensaver Hotkey: F11 triggers fullscreen visualizer
+        self.screensaver_shortcut = QShortcut(QKeySequence("F11"), self)
+        self.screensaver_shortcut.activated.connect(self._open_avs_screensaver)
+
         # Build UI
         self._build_ui()
         self._setup_tray()
@@ -1765,6 +1769,9 @@ class MadGammonWindow(QMainWindow):
 
             act_radio = tray_menu.addAction("📻 Cyberpunk Radio / Радио")
             act_radio.triggered.connect(self._open_radio_dialog)
+
+            act_screensaver = tray_menu.addAction("🔲 Visualizer Screensaver / Заставка (F11)")
+            act_screensaver.triggered.connect(self._open_avs_screensaver)
 
             act_secret = tray_menu.addAction("🛡️ Security Vault / Секретный слой (Ctrl+Shift+S)")
             act_secret.triggered.connect(self._open_secret_pin_dialog)
@@ -1972,6 +1979,9 @@ class MadGammonWindow(QMainWindow):
         radio_state = "Вкл" if self.radio_player.is_playing else "Выкл"
         act_radio = menu.addAction(f"📻 Cyberpunk Radio ({radio_state})")
         act_radio.triggered.connect(self._open_radio_dialog)
+
+        act_screensaver = menu.addAction("🔲 Спектральная заставка (AVS Screensaver) [F11]")
+        act_screensaver.triggered.connect(self._open_avs_screensaver)
 
         act_vault = menu.addAction("🛡️ Секретный слой / Vault (Ctrl+Shift+S)")
         act_vault.triggered.connect(self._open_secret_pin_dialog)
@@ -2872,6 +2882,13 @@ class MadGammonWindow(QMainWindow):
             self.radio_dialog = RadioDialog(self.radio_player, parent=self)
         self.radio_dialog.show()
         self.radio_dialog.activateWindow()
+
+    def _open_avs_screensaver(self):
+        log.info("Opening AVS Screensaver (F11)")
+        if self.radio_dialog is None:
+            self.radio_dialog = RadioDialog(self.radio_player, parent=self)
+        self.radio_dialog.show()
+        self.radio_dialog._toggle_fullscreen_screensaver()
 
     def _on_radio_state_changed(self, is_playing: bool, station):
         if is_playing and station:

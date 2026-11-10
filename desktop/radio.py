@@ -1,18 +1,35 @@
 """
-MadGammon Internet Radio Player — Enhanced Live Channels Edition
-Stream live audio channels matching the Android RadioManager catalogue.
-Expanded with DI.FM / Digitally Imported, Electronic, Synthwave, Cyberpunk, Ambient, Rock & World Streams.
-Uses lightweight background ffplay process with PulseAudio / PipeWire integration and responsive volume control.
+MadGammon Internet Radio Player & Winamp AVS Visualizer Suite
+Stream live audio channels matching the sovereign cyber aesthetic.
+Features:
+- Working high-reliability live audio streams (Cyberpunk/Synthwave, Chillout, RU Hits/Rock, World).
+- Robust background ffplay playback with auto-reconnect, user-agent, and watchdog supervision.
+- Dynamic volume adjustment via PulseAudio/PipeWire sink-input control.
+- Full Winamp AVS Spectrum Analyzer & Visualizer embedded with Screensaver Fullscreen Mode (F11).
+- Interactive AVS Preset Studio for combining and customizing visual effects.
 """
+
 import subprocess
 import threading
 import os
 import signal
+import time
 from typing import List, Optional, Callable
 from dataclasses import dataclass
+
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QListWidget, QListWidgetItem, QComboBox, QSlider, QFrame,
+    QLineEdit, QSplitter, QApplication
+)
+from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+
+from avs_visualizer import AVSCanvasWidget, AVSPresetEditorDialog
 from logger import get_logger
 
 log = get_logger("madgammon.radio")
+
 
 @dataclass
 class RadioStation:
@@ -22,49 +39,48 @@ class RadioStation:
     category: str = "ALL"
     genre: str = ""
 
+
+# ─── VERIFIED LIVE RADIO STREAMS ───
 DEFAULT_STATIONS: List[RadioStation] = [
-    # ─── CYBERPUNK / ELECTRONIC / SYNTHWAVE / DI.FM ───
-    RadioStation("elec_synthwave", "⚡ Nightwave Plaza (Synthwave / Vaporwave)", "https://plaza.one/mp3", "ELECTRONIC", "Vaporwave"),
-    RadioStation("elec_di_chill", "🎧 DI.FM Chillout Dreams (Ambient Beats)", "https://prem1.di.fm:443/chilloutdreams_hi", "ELECTRONIC", "Chillout"),
-    RadioStation("elec_di_progressive", "🎧 DI.FM Progressive House (Club Mix)", "https://prem1.di.fm:443/progressive_hi", "ELECTRONIC", "House"),
-    RadioStation("elec_di_trance", "🎧 DI.FM Vocal Trance (Uplifting)", "https://prem1.di.fm:443/vocaltrance_hi", "ELECTRONIC", "Trance"),
-    RadioStation("elec_di_dnb", "🎧 DI.FM Drum & Bass (Neurofunk & Liquid)", "https://prem1.di.fm:443/drumandbass_hi", "ELECTRONIC", "D&B"),
-    RadioStation("elec_di_psytrance", "🎧 DI.FM Psychedelic Trance (Goa/Psy)", "https://prem1.di.fm:443/goapsy_hi", "ELECTRONIC", "Psytrance"),
-    RadioStation("elec_cyberfm", "⚡ Cyberpunk 2077 Radio (Darksynth / Industrial)", "https://ice1.somafm.com/cliqhop-128-mp3", "ELECTRONIC", "Industrial"),
-    RadioStation("elec_groove", "🌊 SomaFM Groove Salad (Downtempo / Ambient)", "https://ice1.somafm.com/groovesalad-128-mp3", "ELECTRONIC", "Ambient"),
-    RadioStation("elec_defcon", "🛡️ SomaFM DEF CON Radio (Hacker Beats)", "https://ice1.somafm.com/defcon-128-mp3", "ELECTRONIC", "Breakbeat"),
-    RadioStation("elec_deepspace", "🚀 SomaFM Deep Space One (Deep Ambient)", "https://ice1.somafm.com/deepspaceone-128-mp3", "ELECTRONIC", "Space"),
-    RadioStation("elec_dronezone", "🌌 SomaFM Drone Zone (Atmospheric)", "https://ice1.somafm.com/dronezone-128-mp3", "ELECTRONIC", "Drone"),
+    # ─── CYBERPUNK / SYNTHWAVE / ELECTRONIC ───
+    RadioStation("elec_plaza", "⚡ Nightwave Plaza (Synthwave / Vaporwave)", "https://plaza.one/mp3", "ELECTRONIC", "Synthwave"),
+    RadioStation("elec_defcon", "🛡️ SomaFM DEF CON Radio (Hacker Beats)", "http://ice2.somafm.com/defcon-128-mp3", "ELECTRONIC", "Cyberpunk"),
+    RadioStation("elec_groove", "🌊 SomaFM Groove Salad (Downtempo / Chill)", "http://ice2.somafm.com/groovesalad-128-mp3", "ELECTRONIC", "Ambient"),
+    RadioStation("elec_cliqhop", "⚡ SomaFM Cliqhop (IDM / Industrial Cyber)", "http://ice2.somafm.com/cliqhop-128-mp3", "ELECTRONIC", "Industrial"),
+    RadioStation("elec_secret", "🕶️ SomaFM Secret Agent (Spy Jazz / Beats)", "http://ice2.somafm.com/secretagent-128-mp3", "ELECTRONIC", "Lounge"),
+    RadioStation("elec_drone", "🌌 SomaFM Drone Zone (Atmospheric Drone)", "http://ice2.somafm.com/dronezone-128-mp3", "ELECTRONIC", "Ambient"),
+    RadioStation("elec_deepspace", "🚀 SomaFM Deep Space One (Cosmic Ambient)", "http://ice2.somafm.com/deepspaceone-128-mp3", "ELECTRONIC", "Space"),
+    RadioStation("elec_record", "🎧 Radio Record Club (Dance / EDM)", "https://hls-01-radiorecord.hostingradio.ru/record/playlist.m3u8", "ELECTRONIC", "EDM"),
 
     # ─── LO-FI & CHILLOUT ───
-    RadioStation("lofi_chill", "☕ Lofi Girl Stream (Beats to Relax/Play)", "https://streams.ilovemusic.de/iloveradio17.mp3", "LOFI", "Lo-Fi"),
-    RadioStation("lofi_secret", "🕶️ SomaFM Secret Agent (Spy Jazz / Chill)", "https://ice1.somafm.com/secretagent-128-mp3", "LOFI", "Lounge"),
-    RadioStation("lofi_cafecod", "☕ SomaFM Cafe del Mar / Beat Blender", "https://ice1.somafm.com/beatblender-128-mp3", "LOFI", "Downtempo"),
+    RadioStation("lofi_chillsky", "☕ Chillsky Lo-Fi (Beats to Relax & Play)", "https://stream.zeno.fm/f3wvbbqmdg8uv", "LOFI", "Lo-Fi"),
+    RadioStation("lofi_blender", "🍹 SomaFM Beat Blender (Downtempo Fusion)", "http://ice2.somafm.com/beatblender-128-mp3", "LOFI", "Downtempo"),
+    RadioStation("lofi_lush", "🌸 SomaFM Lush (Sensuous Female Vocals)", "http://ice2.somafm.com/lush-128-mp3", "LOFI", "Chillout"),
 
     # ─── RUSSIAN CHANNELS (RU) ───
-    RadioStation("ru_record", "🇷🇺 [RU] Радио Рекорд (EDM / Dance)", "https://online.radiorecord.ru:8055/rr_128", "RU", "Dance"),
-    RadioStation("ru_record_chill", "🇷🇺 [RU] Record Chill-Out (Релакс)", "https://online.radiorecord.ru:8055/chil_128", "RU", "Chillout"),
-    RadioStation("ru_record_synth", "🇷🇺 [RU] Record Synthwave (Ретровейв)", "https://online.radiorecord.ru:8055/synth_128", "RU", "Synthwave"),
-    RadioStation("ru_ep", "🇷🇺 [RU] Европа Плюс (Top 40 Hits)", "https://europaplus.hostingradio.ru:8014/ep128", "RU", "Pop"),
-    RadioStation("ru_rusradio", "🇷🇺 [RU] Русское Радио (Хиты)", "https://rusradio.hostingradio.ru/rusradio128.mp3", "RU", "Hits"),
-    RadioStation("ru_jazz", "🇷🇺 [RU] Радио Джаз (Smooth Jazz)", "https://jazzradio.hostingradio.ru/jazzradio128.mp3", "RU", "Jazz"),
-    RadioStation("ru_dacha", "🇷🇺 [RU] Радио Дача", "https://dacha.hostingradio.ru/dacha128.mp3", "RU", "Pop"),
-    RadioStation("ru_dorognoe", "🇷🇺 [RU] Дорожное Радио", "https://dorognoe.hostingradio.ru:8000/dorognoe128.mp3", "RU", "Retro"),
-    RadioStation("ru_chanson", "🇷🇺 [RU] Радио Шансон", "https://chanson.hostingradio.ru:8041/chanson128.mp3", "RU", "Chanson"),
-    RadioStation("ru_nashe", "🇷🇺 [RU] Наше Радио (Русский Рок)", "https://nashe1.hostingradio.ru/nashe-128.mp3", "RU", "Rock"),
+    RadioStation("ru_europaplus", "🇷🇺 Европа Плюс (Top 40 / Dance)", "http://ep128.hostingradio.ru:8030/ep128", "RU", "Pop/Dance"),
+    RadioStation("ru_dfm", "🇷🇺 DFM Club (Dance & Electro)", "https://dfm.hostingradio.ru/dfm128.mp3", "RU", "Dance"),
+    RadioStation("ru_montecarlo", "🇷🇺 Радио Monte Carlo (Lounge & Pop)", "https://montecarlo.hostingradio.ru/montecarlo128.mp3", "RU", "Lounge"),
+    RadioStation("ru_maximum", "🇷🇺 Радио MAXIMUM (Rock & Alternative)", "https://maximum.hostingradio.ru/maximum128.mp3", "RU", "Rock"),
+    RadioStation("ru_nashe", "🇷🇺 Наше Радио (Русский Рок)", "http://nashe1.hostingradio.ru/nashe-128.mp3", "RU", "Rock"),
+    RadioStation("ru_rusradio", "🇷🇺 Русское Радио (Хиты)", "https://rusradio.hostingradio.ru/rusradio128.mp3", "RU", "Pop"),
+    RadioStation("ru_chanson", "🇷🇺 Радио Шансон", "http://chanson.hostingradio.ru:8041/chanson128.mp3", "RU", "Chanson"),
 
-    # ─── WORLD / INTERNATIONAL (EN / ES / DE / FR) ───
-    RadioStation("en_bbcws", "🇬🇧 [EN] BBC World Service", "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service", "WORLD", "News"),
-    RadioStation("en_classic", "🇬🇧 [EN] Classic FM (Симфоническая классика)", "https://stream.global.com/classicfmmp3", "WORLD", "Classical"),
-    RadioStation("es_ibiza", "🇪🇸 [ES] Ibiza Global Radio (Ibiza Club)", "https://live.ibizaglobalradio.com/stream", "WORLD", "Deep House"),
-    RadioStation("es_los40", "🇪🇸 [ES] Los 40 Principales (Latin Pop)", "https://rstream.los40.com/los40.mp3", "WORLD", "Latin"),
-    RadioStation("de_1live", "🇩🇪 [DE] 1LIVE WDR (Германия)", "https://wdr-1live-live.icecast.wdr.de/wdr/1live/live/mp3/128/stream.mp3", "WORLD", "Pop/Rock"),
-    RadioStation("de_antenne", "🇩🇪 [DE] Antenne Bayern (Бавария)", "https://webradio.antenne.de/antenne", "WORLD", "Pop"),
-    RadioStation("fr_fip", "🇫🇷 [FR] FIP Radio France (Эклектика/Джаз)", "https://stream.radiofrance.fr/fip/fip.mp3", "WORLD", "Eclectic"),
+    # ─── WORLD / INTERNATIONAL ───
+    RadioStation("world_kexp", "🇺🇸 KEXP 90.3 FM Seattle (Indie / Alternative)", "https://kexp.streamguys1.com/kexp128.mp3", "WORLD", "Indie"),
+    RadioStation("world_fip", "🇫🇷 FIP Radio France (Eclectic & Jazz)", "https://icecast.radiofrance.fr/fip-midfi.mp3", "WORLD", "Eclectic"),
+    RadioStation("world_bbc", "🇬🇧 BBC World Service (News & Culture)", "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service", "WORLD", "News"),
 ]
 
+
 class RadioPlayer:
-    """Controls stream playback using system ffplay."""
+    """
+    Subprocess-based streaming audio player using ffplay.
+    Features:
+    - User-agent spoofing & stream auto-reconnect
+    - Background watchdog thread for process monitoring
+    - Dynamic volume adjustment via pactl sink-input volume control
+    """
     def __init__(self, on_state_changed: Optional[Callable[[bool, Optional[RadioStation]], None]] = None):
         self.on_state_changed = on_state_changed
         self.process: Optional[subprocess.Popen] = None
@@ -72,6 +88,8 @@ class RadioPlayer:
         self.volume: int = 80  # 0..100
         self.is_playing = False
         self._lock = threading.Lock()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._stop_requested = False
 
     def get_stations(self, cat_filter: str = "ALL") -> List[RadioStation]:
         if cat_filter == "ALL":
@@ -80,7 +98,8 @@ class RadioPlayer:
 
     def play(self, station: RadioStation):
         with self._lock:
-            self.stop()
+            self._stop_process()
+            self._stop_requested = False
             self.current_station = station
             log.info("Starting radio playback: %s (%s)", station.name, station.url)
 
@@ -88,8 +107,12 @@ class RadioPlayer:
                 "ffplay",
                 "-nodisp",
                 "-nostats",
-                "-autoexit",
-                "-loglevel", "quiet",
+                "-loglevel", "warning",
+                "-user_agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "-reconnect", "1",
+                "-reconnect_at_eof", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
                 "-volume", str(self.volume),
                 station.url
             ]
@@ -97,36 +120,65 @@ class RadioPlayer:
             try:
                 self.process = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     preexec_fn=os.setsid
                 )
                 self.is_playing = True
+                log.info("ffplay spawned with PID %d", self.process.pid)
+
+                # Launch watchdog thread to detect stream crashes / disconnects
+                self._watchdog_thread = threading.Thread(
+                    target=self._watchdog_loop,
+                    args=(self.process,),
+                    daemon=True,
+                    name=f"RadioWatchdog-{self.process.pid}"
+                )
+                self._watchdog_thread.start()
+
                 if self.on_state_changed:
                     self.on_state_changed(True, self.current_station)
-                log.info("ffplay spawned with PID %d", self.process.pid)
+
+                # Set volume in PulseAudio/PipeWire for this sink-input
+                threading.Timer(0.8, self._apply_pactl_volume, args=(self.process.pid, self.volume)).start()
+
             except Exception as e:
                 log.exception("Failed to spawn ffplay for radio: %s", e)
                 self.is_playing = False
                 if self.on_state_changed:
                     self.on_state_changed(False, None)
 
+    def _watchdog_loop(self, proc: subprocess.Popen):
+        proc.wait()
+        with self._lock:
+            if not self._stop_requested and self.process == proc:
+                log.warning("ffplay process %d exited unexpectedly (returncode: %s)", proc.pid, proc.returncode)
+                self.is_playing = False
+                if self.on_state_changed:
+                    self.on_state_changed(False, self.current_station)
+
     def stop(self):
+        with self._lock:
+            self._stop_process()
+            self.is_playing = False
+            if self.on_state_changed:
+                self.on_state_changed(False, self.current_station)
+
+    def _stop_process(self):
+        self._stop_requested = True
         if self.process:
-            log.info("Stopping radio playback (PID %d)", self.process.pid)
+            pid = self.process.pid
+            log.info("Terminating radio process (PID %d)", pid)
             try:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-                self.process.wait(timeout=0.6)
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                self.process.wait(timeout=0.5)
             except Exception:
                 try:
-                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
                 except Exception:
                     pass
             self.process = None
-
-        self.is_playing = False
-        if self.on_state_changed:
-            self.on_state_changed(False, self.current_station)
 
     def toggle(self, station: Optional[RadioStation] = None):
         if self.is_playing:
@@ -168,29 +220,50 @@ class RadioPlayer:
     def set_volume(self, vol: int):
         self.volume = max(0, min(100, vol))
         log.debug("Radio volume set to %d%%", self.volume)
+        if self.is_playing and self.process:
+            self._apply_pactl_volume(self.process.pid, self.volume)
+
+    def _apply_pactl_volume(self, pid: int, vol_percent: int):
+        """Adjusts PulseAudio / PipeWire volume of ffplay's sink-input dynamically."""
+        try:
+            out = subprocess.check_output(["pactl", "list", "sink-inputs"], text=True, stderr=subprocess.DEVNULL)
+            current_input = None
+            for line in out.splitlines():
+                line_s = line.strip()
+                if line_s.startswith("Sink Input #"):
+                    current_input = line_s.replace("Sink Input #", "").strip()
+                elif (f'application.process.id = "{pid}"' in line_s or 'application.name = "ffplay"' in line_s) and current_input:
+                    subprocess.run(["pactl", "set-sink-input-volume", current_input, f"{vol_percent}%"],
+                                   check=True, stderr=subprocess.DEVNULL)
+                    log.debug("Adjusted pactl sink-input #%s to %d%%", current_input, vol_percent)
+                    return True
+        except Exception:
+            pass
+        return False
 
 
-# ═══════════════════════════════════════════════════════
-#  RADIO DIALOG (Futuristic Cyberpunk Player UI)
-# ═══════════════════════════════════════════════════════
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QComboBox, QSlider, QFrame
-)
-from PyQt6.QtGui import QFont, QColor, QPainter, QLinearGradient
-from PyQt6.QtCore import Qt, QTimer, QRectF
-
+# ═════════════════════════════════════════════════════════════════
+#  RADIO DIALOG WITH EMBEDDED AVS SPECTRUM & SCREENSAVER
+# ═════════════════════════════════════════════════════════════════
 class RadioDialog(QDialog):
+    """
+    Sovereign Cyberpunk Radio Player with Embedded Winamp AVS Spectrum Analyzer.
+    Includes:
+    - Fullscreen Screensaver Mode (F11 / Double-Click)
+    - Winamp AVS Visualizer Studio
+    - Category filtering & Search
+    - Live play/pause/prev/next & responsive volume slider
+    """
     def __init__(self, radio_player: RadioPlayer, parent=None):
         super().__init__(parent)
         self.player = radio_player
-        self.setWindowTitle("📻 Киберпанк Радио // Sovereign Audio Stream")
-        self.resize(540, 560)
-        self.setMinimumSize(480, 500)
+        self.setWindowTitle("📻 Киберпанк Радио // Sovereign Stream & AVS Visualizer")
+        self.resize(720, 680)
+        self.setMinimumSize(600, 560)
 
         self.setStyleSheet("""
             QDialog {
-                background: #10141d;
+                background: #0d111a;
                 border: 2px solid #00e5ff;
                 border-radius: 10px;
             }
@@ -205,135 +278,148 @@ class RadioDialog(QDialog):
                 border-radius: 6px;
                 font-family: Monospace;
                 font-size: 11px;
-                padding: 6px;
+                padding: 4px;
             }
             QListWidget::item {
-                padding: 5px 8px;
+                padding: 6px 8px;
                 border-bottom: 1px solid #141b24;
             }
             QListWidget::item:selected {
-                background: #003322;
-                color: #00ffaa;
-                border: 1px solid #00ff88;
-                border-radius: 4px;
-            }
-            QComboBox {
-                background: #182030;
+                background: #003344;
                 color: #00e5ff;
-                border: 1.5px solid #00e5ff;
-                border-radius: 4px;
-                padding: 5px 10px;
-                font-family: Monospace;
                 font-weight: bold;
-                font-size: 11px;
+                border-left: 3px solid #00e5ff;
             }
             QPushButton {
-                background: #182030;
-                color: #00ff88;
-                border: 1.5px solid #00ff88;
-                padding: 8px 14px;
-                border-radius: 5px;
+                background: #141d28;
+                color: #00e5ff;
+                border: 1px solid #00aacc;
+                border-radius: 4px;
+                padding: 6px 14px;
                 font-weight: bold;
                 font-family: Monospace;
                 font-size: 11px;
             }
             QPushButton:hover {
-                background: #004422;
-                border-color: #00ffbb;
+                background: #004455;
                 color: #ffffff;
+            }
+            QComboBox {
+                background: #141d28;
+                color: #00e5ff;
+                border: 1px solid #00aacc;
+                border-radius: 4px;
+                padding: 5px;
+                font-family: Monospace;
+                font-size: 11px;
             }
             QSlider::groove:horizontal {
                 height: 6px;
-                background: #151d28;
+                background: #1c2636;
                 border-radius: 3px;
-                border: 1px solid #203040;
             }
             QSlider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00aa66, stop:1 #00ffaa);
+                background: #00e5ff;
                 border-radius: 3px;
             }
             QSlider::handle:horizontal {
-                background: #00e5ff;
-                border: 2px solid #ffffff;
-                width: 16px;
-                margin-top: -5px;
-                margin-bottom: -5px;
-                border-radius: 8px;
+                background: #ffffff;
+                width: 14px;
+                margin-top: -4px;
+                margin-bottom: -4px;
+                border-radius: 7px;
             }
         """)
+
+        # Connect player callback
+        self._orig_callback = self.player.on_state_changed
+        self.player.on_state_changed = self._on_player_state_changed
 
         self._build_ui()
         self._load_stations("ALL")
 
-        # Visual spectrum pulse timer
-        self._pulse_timer = QTimer(self)
-        self._pulse_timer.setInterval(100)
-        self._pulse_timer.timeout.connect(self._update_spectrum)
-        self._pulse_timer.start()
+        # Shortcuts
+        self.shortcut_fs = QShortcut(QKeySequence("F11"), self)
+        self.shortcut_fs.activated.connect(self._toggle_fullscreen_screensaver)
+
+        self.shortcut_space = QShortcut(QKeySequence("Space"), self)
+        self.shortcut_space.activated.connect(self._toggle_play)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
-        layout.setContentsMargins(18, 18, 18, 18)
 
-        # Header HUD
-        head_box = QFrame()
-        head_box.setStyleSheet("background: #151b27; border: 1px solid #00e5ff; border-radius: 6px; padding: 6px;")
-        hb_layout = QHBoxLayout(head_box)
-        hb_layout.setContentsMargins(8, 4, 8, 4)
+        # ─── Top Header Bar ───
+        top_bar = QHBoxLayout()
+        lbl_head = QLabel("📻 SOVEREIGN CYBER-RADIO // AVS VISUALIZER")
+        lbl_head.setFont(QFont("Monospace", 12, QFont.Weight.Bold))
+        lbl_head.setStyleSheet("color: #00e5ff;")
+        top_bar.addWidget(lbl_head)
+        top_bar.addStretch()
 
-        lbl_head = QLabel("📻 КИБЕРПАНК СТРИМ-РАДИО // DI.FM & SOMA")
-        lbl_head.setFont(QFont("Monospace", 11, QFont.Weight.Black))
-        lbl_head.setStyleSheet("color: #00e5ff; letter-spacing: 1px;")
-        hb_layout.addWidget(lbl_head)
+        btn_studio = QPushButton("🎨 AVS Студия")
+        btn_studio.setToolTip("Открыть конструктор плагинов и пресетов Winamp AVS")
+        btn_studio.clicked.connect(self._open_avs_studio)
+        top_bar.addWidget(btn_studio)
 
-        hb_layout.addStretch()
+        btn_fs = QPushButton("🔲 Заставка (F11)")
+        btn_fs.setStyleSheet("background: #004455; color: #00e5ff; border: 1.5px solid #00e5ff;")
+        btn_fs.setToolTip("Развернуть анализатор спектра во весь экран как заставку")
+        btn_fs.clicked.connect(self._toggle_fullscreen_screensaver)
+        top_bar.addWidget(btn_fs)
 
-        self.lbl_vumeter = QLabel("||||||||||||||||")
-        self.lbl_vumeter.setFont(QFont("Monospace", 9, QFont.Weight.Bold))
-        self.lbl_vumeter.setStyleSheet("color: #00ff88;")
-        hb_layout.addWidget(self.lbl_vumeter)
+        layout.addLayout(top_bar)
 
-        layout.addWidget(head_box)
+        # ─── Center: Winamp AVS Canvas Visualizer ───
+        self.avs_widget = AVSCanvasWidget(self)
+        self.avs_widget.setFixedHeight(220)
+        self.avs_widget.setStyleSheet("border: 1px solid #1c2b3c; border-radius: 6px;")
+        layout.addWidget(self.avs_widget)
 
-        # Category Filter Row
-        f_row = QHBoxLayout()
-        lbl_cat = QLabel("Жанр / Категория:")
-        lbl_cat.setFont(QFont("Monospace", 9, QFont.Weight.Bold))
-        lbl_cat.setStyleSheet("color: #ffd54f;")
-        f_row.addWidget(lbl_cat)
+        # ─── Station Filter & Category Tabs ───
+        filter_bar = QHBoxLayout()
+        filter_bar.addWidget(QLabel("Категория:"))
 
-        self.combo_lang = QComboBox()
-        self.combo_lang.addItems([
-            "ALL (Все 30+ каналов)",
-            "ELECTRONIC (DI.FM / Synthwave / Trance)",
-            "LOFI (Lofi Girl / Secret Agent / Chill)",
-            "RU (Рекорд / Джаз / Рок / Поп)",
-            "WORLD (BBC / Ibiza / Европа)"
+        self.combo_cat = QComboBox()
+        self.combo_cat.addItems([
+            "🌐 Все каналы (ALL)",
+            "⚡ Киберпанк / Электроника (ELECTRONIC)",
+            "☕ Lo-Fi & Chillout (LOFI)",
+            "🇷🇺 Русские радиостанции (RU)",
+            "🌍 Мировые станции (WORLD)"
         ])
-        self.combo_lang.currentIndexChanged.connect(self._on_category_changed)
-        f_row.addWidget(self.combo_lang, 1)
-        layout.addLayout(f_row)
+        self.combo_cat.currentIndexChanged.connect(self._on_category_changed)
+        filter_bar.addWidget(self.combo_cat, 1)
 
-        # Station List
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("🔍 Поиск станции...")
+        self.search_edit.setStyleSheet("""
+            QLineEdit {
+                background: #141d28; color: #ffffff; border: 1px solid #1c2b3c;
+                border-radius: 4px; padding: 4px 8px; font-size: 11px;
+            }
+            QLineEdit:focus { border-color: #00e5ff; }
+        """)
+        self.search_edit.textChanged.connect(self._filter_stations_list)
+        filter_bar.addWidget(self.search_edit, 1)
+
+        layout.addLayout(filter_bar)
+
+        # ─── Station List ───
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._play_selected)
         layout.addWidget(self.list_widget, 1)
 
-        # Status text card
-        stat_card = QFrame()
-        stat_card.setStyleSheet("background: #0d121b; border: 1px solid #1f2e42; border-radius: 6px; padding: 6px;")
-        sc_layout = QHBoxLayout(stat_card)
+        # ─── Status Ticker ───
         self.lbl_status = QLabel(self._get_status_text())
-        self.lbl_status.setStyleSheet("color: #00e5ff; font-weight: bold; font-size: 11px;")
-        sc_layout.addWidget(self.lbl_status)
-        layout.addWidget(stat_card)
+        self.lbl_status.setFont(QFont("Monospace", 9, QFont.Weight.Bold))
+        self.lbl_status.setStyleSheet("color: #00ffaa; padding: 2px;")
+        layout.addWidget(self.lbl_status)
 
-        # Volume slider & mute
+        # ─── Volume Control Row ───
         vol_row = QHBoxLayout()
-        lbl_vol = QLabel("🔊 Громкость:")
-        lbl_vol.setFont(QFont("Monospace", 9, QFont.Weight.Bold))
-        vol_row.addWidget(lbl_vol)
+        vol_row.addWidget(QLabel("Громкость:"))
 
         self.slider_vol = QSlider(Qt.Orientation.Horizontal)
         self.slider_vol.setRange(0, 100)
@@ -346,23 +432,23 @@ class RadioDialog(QDialog):
         self.lbl_vol_val.setStyleSheet("color: #00ffaa; font-weight: bold;")
         vol_row.addWidget(self.lbl_vol_val)
 
-        btn_mute = QPushButton("🔇 Mute")
-        btn_mute.setFixedWidth(75)
-        btn_mute.clicked.connect(self._toggle_mute)
-        vol_row.addWidget(btn_mute)
+        self.btn_mute = QPushButton("🔇 Mute")
+        self.btn_mute.setFixedWidth(70)
+        self.btn_mute.clicked.connect(self._toggle_mute)
+        vol_row.addWidget(self.btn_mute)
         layout.addLayout(vol_row)
 
-        # Control Buttons Row
+        # ─── Playback Control Buttons ───
         btn_row = QHBoxLayout()
 
         self.btn_prev = QPushButton("⏮ ПРЕД")
-        self.btn_prev.setToolTip("Предыдущая станция в списке")
+        self.btn_prev.setToolTip("Предыдущая станция")
         self.btn_prev.clicked.connect(self._on_prev)
         btn_row.addWidget(self.btn_prev)
 
         self.btn_play = QPushButton("▶ ИГРАТЬ")
-        self.btn_play.setStyleSheet("background: #003318; border-color: #00ff66; color: #00ffaa;")
-        self.btn_play.clicked.connect(self._play_selected)
+        self.btn_play.setStyleSheet("background: #003318; border-color: #00ff66; color: #00ffaa; font-size: 12px;")
+        self.btn_play.clicked.connect(self._toggle_play)
         btn_row.addWidget(self.btn_play)
 
         self.btn_stop = QPushButton("⏹ СТОП")
@@ -371,7 +457,7 @@ class RadioDialog(QDialog):
         btn_row.addWidget(self.btn_stop)
 
         self.btn_next = QPushButton("СЛЕД ⏭")
-        self.btn_next.setToolTip("Следующая станция в списке")
+        self.btn_next.setToolTip("Следующая станция")
         self.btn_next.clicked.connect(self._on_next)
         btn_row.addWidget(self.btn_next)
 
@@ -392,6 +478,16 @@ class RadioDialog(QDialog):
         cat = cats[idx] if idx < len(cats) else "ALL"
         self._load_stations(cat)
 
+    def _filter_stations_list(self, text: str):
+        search_txt = text.strip().lower()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            station: RadioStation = item.data(Qt.ItemDataRole.UserRole)
+            if not search_txt or search_txt in station.name.lower() or search_txt in station.genre.lower():
+                item.setHidden(False)
+            else:
+                item.setHidden(True)
+
     def _load_stations(self, cat_tag: str):
         self.list_widget.clear()
         stations = self.player.get_stations(cat_tag)
@@ -401,32 +497,40 @@ class RadioDialog(QDialog):
             self.list_widget.addItem(item)
             if self.player.current_station and self.player.current_station.id == s.id:
                 item.setSelected(True)
+        if self.list_widget.count() > 0 and not self.list_widget.currentItem():
+            self.list_widget.setCurrentRow(0)
 
     def _play_selected(self):
         item = self.list_widget.currentItem()
+        if not item and self.list_widget.count() > 0:
+            item = self.list_widget.item(0)
+            self.list_widget.setCurrentItem(item)
         if not item:
-            if self.list_widget.count() > 0:
-                item = self.list_widget.item(0)
-                self.list_widget.setCurrentItem(item)
-            else:
-                return
+            return
+
         station: RadioStation = item.data(Qt.ItemDataRole.UserRole)
         self.player.play(station)
-        self.lbl_status.setText(self._get_status_text())
+        self._update_ui_state()
+
+    def _toggle_play(self):
+        if self.player.is_playing:
+            self._stop_playback()
+        else:
+            self._play_selected()
 
     def _stop_playback(self):
         self.player.stop()
-        self.lbl_status.setText(self._get_status_text())
+        self._update_ui_state()
 
     def _on_next(self):
         self.player.next_station()
         self._sync_selected_item()
-        self.lbl_status.setText(self._get_status_text())
+        self._update_ui_state()
 
     def _on_prev(self):
         self.player.prev_station()
         self._sync_selected_item()
-        self.lbl_status.setText(self._get_status_text())
+        self._update_ui_state()
 
     def _sync_selected_item(self):
         if not self.player.current_station:
@@ -446,16 +550,43 @@ class RadioDialog(QDialog):
         if self.slider_vol.value() > 0:
             self._prev_vol = self.slider_vol.value()
             self.slider_vol.setValue(0)
+            self.btn_mute.setText("🔊 Unmute")
         else:
-            self.slider_vol.setValue(getattr(self, '_prev_vol', 80))
+            prev = getattr(self, "_prev_vol", 80)
+            self.slider_vol.setValue(prev)
+            self.btn_mute.setText("🔇 Mute")
 
-    def _update_spectrum(self):
+    def _update_ui_state(self):
+        st_text = self._get_status_text()
+        self.lbl_status.setText(st_text)
+        station_name = self.player.current_station.name if self.player.current_station else "MadGammon Radio"
+        self.avs_widget.set_playing_state(self.player.is_playing, station_name)
+
         if self.player.is_playing:
-            import random
-            bars = ["|", "/", "-", "\\"]
-            count = random.randint(8, 16)
-            self.lbl_vumeter.setText("".join(random.choice(bars) for _ in range(count)))
-            self.lbl_vumeter.setStyleSheet("color: #00ffaa;")
+            self.btn_play.setText("⏸ ПАУЗА")
+            self.btn_play.setStyleSheet("background: #003344; border-color: #00e5ff; color: #00e5ff; font-size: 12px;")
         else:
-            self.lbl_vumeter.setText("[OFFLINE]")
-            self.lbl_vumeter.setStyleSheet("color: #667788;")
+            self.btn_play.setText("▶ ИГРАТЬ")
+            self.btn_play.setStyleSheet("background: #003318; border-color: #00ff66; color: #00ffaa; font-size: 12px;")
+
+    def _on_player_state_changed(self, is_playing: bool, station: Optional[RadioStation]):
+        # Call original handler if attached (e.g. main window toolbar button)
+        if self._orig_callback:
+            try:
+                self._orig_callback(is_playing, station)
+            except Exception:
+                pass
+        # Update local UI via Qt thread safe timer
+        QTimer.singleShot(0, self._update_ui_state)
+
+    def _toggle_fullscreen_screensaver(self):
+        self.avs_widget.toggle_fullscreen_screensaver()
+
+    def _open_avs_studio(self):
+        dlg = AVSPresetEditorDialog(self.avs_widget, self)
+        dlg.exec()
+
+    def closeEvent(self, event):
+        # Restore original callback
+        self.player.on_state_changed = self._orig_callback
+        super().closeEvent(event)
