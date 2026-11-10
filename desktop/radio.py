@@ -693,21 +693,28 @@ class RadioDialog(QDialog):
         idx = item.data(Qt.ItemDataRole.UserRole)
         if 0 <= idx < len(self._tg_tracks):
             track = self._tg_tracks[idx]
-            # Resolve live stream URL
-            url = track.file_url
-            if not url and track.file_id:
-                url = self.bot_engine.get_direct_stream_url(track.file_id)
-                track.file_url = url or ""
+            self.lbl_status.setText(f"⏳ ПОЛУЧЕНИЕ АУДИОПОТОКА: {track.display_name}...")
+            QApplication.processEvents()
 
-            if not url:
-                QMessageBox.warning(self, "Ошибка", "Не удалось получить аудиопоток для этого трека.")
+            # Resolve playable source (local cached file or live streaming URL)
+            source = self.bot_engine.resolve_playable_source(track)
+
+            if not source:
+                self.lbl_status.setText("❌ Ошибка: не удалось получить аудиопоток.")
+                QMessageBox.warning(
+                    self, "Ошибка аудиопотока",
+                    f"Не удалось получить аудиофайл для трека:\n{track.display_name}\n\n"
+                    "Проверьте, что бот @armageddonfm_bot имеет доступ к каналу."
+                )
                 return
+
+            log.info("Playing Telegram track: %s from %s", track.display_name, source)
 
             # Construct RadioStation wrapper and play
             pseudo_station = RadioStation(
                 id=f"tg_{track.post_id}",
                 name=f"📡 {track.display_name}",
-                url=url,
+                url=source,
                 category="TELEGRAM",
                 genre="Telegram Audio"
             )

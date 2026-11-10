@@ -144,14 +144,22 @@ class TelegramBotEngine:
         self._load_config()
 
     def _load_config(self):
-        try:
-            if os.path.exists(BOT_CONFIG_FILE):
-                with open(BOT_CONFIG_FILE) as f:
-                    data = json.load(f)
-                self.token = data.get("bot_token", self.token)
-                self.user_id = data.get("user_id", self.user_id)
-        except Exception:
-            pass
+        for d in TG_SEARCH_DIRS:
+            p = os.path.join(d, "bot_config.json")
+            try:
+                if os.path.exists(p):
+                    with open(p) as f:
+                        data = json.load(f)
+                    tok = data.get("bot_token")
+                    uid = data.get("user_id")
+                    if tok:
+                        self.token = tok
+                    if uid:
+                        self.user_id = uid
+                    if self.token and self.user_id:
+                        break
+            except Exception:
+                pass
 
     def save_config(self):
         try:
@@ -233,6 +241,76 @@ class TelegramBotEngine:
         if res and res.get("file_path"):
             return f"https://api.telegram.org/file/bot{self.token}/{res['file_path']}"
         return None
+
+    def resolve_playable_source(self, track: TgAudioTrack) -> Optional[str]:
+        """
+        Robustly resolves an audio track to a playable stream URL or local file path:
+        1. Checks local cache file
+        2. Tries existing file_id via getFile
+        3. If expired/invalid, re-fetches metadata via forwardMessage to get fresh file_id
+        4. Starts background download to local cache
+        """
+        # 1. Check local cache
+        safe_name = f"{track.channel}_{track.post_id}.mp3"
+        local_target = os.path.join(TG_AUDIO_CACHE_DIR, safe_name)
+        if os.path.exists(local_target) and os.path.getsize(local_target) > 10000:
+            track.local_path = local_target
+            return local_target
+
+        url = None
+        # 2. Try current file_id
+        if track.file_id:
+            url = self.get_direct_stream_url(track.file_id)
+
+        # 3. If failed, re-fetch metadata from channel post
+        if not url:
+            log.info("Re-fetching fresh metadata for %s / post %d...", track.channel, track.post_id)
+            fresh = self.fetch_track_metadata(track.channel, track.post_id)
+            if fresh and fresh.file_id:
+                track.file_id = fresh.file_id
+                if not track.title or track.title.startswith("Track #"):
+                    track.title = fresh.title
+                if fresh.performer:
+                    track.performer = fresh.performer
+                url = self.get_direct_stream_url(fresh.file_id)
+
+        if url:
+            track.file_url = url
+            # Start background caching
+            threading.Thread(
+                target=self._cache_audio_file,
+                args=(url, local_target, track),
+                daemon=True,
+                name=f"CacheAudio-{track.post_id}"
+            ).start()
+            return url
+
+        return None
+
+    def _cache_audio_file(self, url: str, target_path: str, track: TgAudioTrack):
+        """Background worker to download audio file into cache."""
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            temp_path = f"{target_path}.part"
+            req = Request(url, headers={"User-Agent": USER_AGENT})
+            with urlopen(req, timeout=30) as resp:
+                with open(temp_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(16384)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 10000:
+                os.replace(temp_path, target_path)
+                track.local_path = target_path
+                log.info("Cached audio track to %s (%d bytes)", target_path, os.path.getsize(target_path))
+        except Exception as e:
+            log.debug("Background audio cache failed for %s: %s", target_path, e)
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════
